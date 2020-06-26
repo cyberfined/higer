@@ -164,7 +164,7 @@ checkLVal sc lv = case lv of
         r@(TRecord _ fs) -> case lookup f fs of
             Nothing -> throwErr sc $ "record have no field " ++ f
             Just t -> case t of
-                Recursive -> return (LDot lv' f, r)
+                TRecursive -> return (LDot lv' f, r)
                 _ -> return (LDot lv' f, t)
         _ -> throwErr sc $ "cannot access field " ++ f ++ " from non-record type"
     LArr lv ind -> checkLVal sc lv >>= \(lv', tlv) -> case tlv of
@@ -201,7 +201,7 @@ checkRecord (Record sc rec fs) = lookupType rec >>= \mt -> case mt of
           where checkTypes ((fid,fex):fs) tfs = case lookup fid tfs of
                   Nothing -> throwErr sc $ "record type " ++ rec ++ " have no field " ++ fid
                   Just expt -> checkExpr fex >>= \(fex', tfex) ->
-                      if tfex == expt || expt == Recursive && tfex == rett
+                      if tfex == expt || expt == TRecursive && (tfex == rett || tfex == TNil)
                          then checkTypes fs tfs >>= \fs' -> return ((fid,fex'):fs')
                          else throwErr sc $ "wrong type of expression assigned to record " ++ rec ++ " field " ++ fid ++ ": expected " ++ show expt ++ " but given " ++ show tfex
                 checkTypes _ _ = return []
@@ -228,15 +228,15 @@ checkDecs decs = fStage decs [] [] >>= sStage
         sStage (d:ds) = case d of
             TypeDec sc (TypedType tid t) -> resolveType sc t [] >>= \t' -> insertType tid t' >> sStage ds >>= \decs' -> return ((TypeDec sc (TypedType tid t')):decs')
             VarDec sc (UntypedVar vid mt exp) -> checkExpr exp >>= \(exp', texp) ->
-                if texp == TUnit || texp == TNil
-                   then throwErr sc $ "assign no valued expression to variable"
-                   else case mt of
-                       Nothing -> insertVType vid texp >> sStage ds >>= \decs' -> return ((VarDec sc (TypedVar vid texp exp')):decs')
-                       Just svt -> lookupType svt >>= \mvt -> case mvt of
-                           Nothing -> throwErr sc $ "undefined type " ++ svt
-                           Just vt -> if vt == texp
-                                         then insertVType vid vt >> sStage ds >>= \decs' -> return ((VarDec sc (TypedVar vid vt exp')):decs')
-                                         else throwErr sc $ "type mismatch in creation of variable " ++ vid ++ ": expected " ++ show vt ++ " but given " ++ show texp
+                case mt of
+                    Nothing -> if texp == TUnit || texp == TNil
+                                  then throwErr sc $ "assign no valued expression to untyped variable"
+                                  else insertVType vid texp >> sStage ds >>= \decs' -> return ((VarDec sc (TypedVar vid texp exp')):decs')
+                    Just svt -> lookupType svt >>= \mvt -> case mvt of
+                        Nothing -> throwErr sc $ "undefined type " ++ svt
+                        Just vt -> if isValidAssign vt texp
+                                      then insertVType vid vt >> sStage ds >>= \decs' -> return ((VarDec sc (TypedVar vid vt exp')):decs')
+                                      else throwErr sc $ "type mismatch in creation of variable " ++ vid ++ ": expected " ++ show vt ++ " but given " ++ show texp
             FunDec sc (UntypedFun fid args mres exp) -> mapM (\(x,t) -> lookupTypeErr t >>= \t' -> return (x,t')) args >>= \args' ->
                 maybe (return TUnit) lookupTypeErr mres >>= \res -> 
                     pushEnv >> mapM (uncurry insertVType) args' >>
@@ -257,7 +257,7 @@ checkDecs decs = fStage decs [] [] >>= sStage
                 if isArray t'
                    then throwErr sc $ "multidimensional arrays aren't supported"
                    else return $ TArray t'
-            TRecord rec fs -> mapM (\(x,t) -> (if isRecursiveType rec t then return Recursive else resolveType sc t []) >>= \t' -> return (x,t')) fs >>= return . TRecord rec
+            TRecord rec fs -> mapM (\(x,t) -> (if isRecursiveType rec t then return TRecursive else resolveType sc t []) >>= \t' -> return (x,t')) fs >>= return . TRecord rec
             TName syn -> if elem syn visited
                             then throwErr sc "cycle in type synonym"
                             else lookupType syn >>= \mt -> case mt of

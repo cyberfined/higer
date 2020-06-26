@@ -22,7 +22,7 @@ data Type = TInt
           | TNil
           | TUnit
           | TName String
-          | Recursive
+          | TRecursive
           deriving Eq
 
 instance Show Type where
@@ -35,7 +35,7 @@ instance Show Type where
         TNil -> "nil"
         TUnit -> "()"
         TName s -> s
-        Recursive -> "recursive"
+        TRecursive -> "recursive"
 
 data SourcePos = SourcePos String Int Int deriving (Eq, Show)
 
