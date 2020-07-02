@@ -131,11 +131,11 @@ checkExpr exp = case exp of
         if tcond == TInt
            then withInLoop (checkExpr th) >>= \(th', tth) -> return (While sc cond' th', TUnit)
            else throwErr cond $ "type mismatch in while condition: expected int but given " ++ show tcond
-    For sc v from to th -> checkExpr from >>= \(from', tfrom) ->
+    For sc v esc from to th -> checkExpr from >>= \(from', tfrom) ->
         if tfrom == TInt
            then checkExpr to >>= \(to', tto) ->
                if tto == TInt
-                  then pushEnv >> insertVType v TInt >> withInLoop (checkExpr th) >>= \(th', tth) -> popEnv >> return (For sc v from' to' th', TUnit)
+                  then pushEnv >> insertVType v TInt >> withInLoop (checkExpr th) >>= \(th', tth) -> popEnv >> return (For sc v esc from' to' th', TUnit)
                   else throwErr to $ "type mismatch in for to expression: expected int but give " ++ show tto
            else throwErr from $ "type mismatch in for assignment expression: expected int but given " ++ show tfrom
     Break sc -> getInLoop >>= \inLoop ->
@@ -231,16 +231,16 @@ checkDecs decs = fStage decs [] [] >>= sStage
                 case mt of
                     Nothing -> if texp == TUnit || texp == TNil
                                   then throwErr sc $ "assign no valued expression to untyped variable"
-                                  else insertVType vid texp >> sStage ds >>= \decs' -> return ((VarDec sc (TypedVar vid texp exp')):decs')
+                                  else insertVType vid texp >> sStage ds >>= \decs' -> return ((VarDec sc (TypedVar vid texp False exp')):decs')
                     Just svt -> lookupType svt >>= \mvt -> case mvt of
                         Nothing -> throwErr sc $ "undefined type " ++ svt
                         Just vt -> if isValidAssign vt texp
-                                      then insertVType vid vt >> sStage ds >>= \decs' -> return ((VarDec sc (TypedVar vid vt exp')):decs')
+                                      then insertVType vid vt >> sStage ds >>= \decs' -> return ((VarDec sc (TypedVar vid vt False exp')):decs')
                                       else throwErr sc $ "type mismatch in creation of variable " ++ vid ++ ": expected " ++ show vt ++ " but given " ++ show texp
-            FunDec sc (UntypedFun fid args mres exp) -> mapM (\(x,t) -> lookupTypeErr t >>= \t' -> return (x,t')) args >>= \args' ->
+            FunDec sc (UntypedFun fid args mres exp) -> mapM (\(x,t) -> lookupTypeErr t >>= \t' -> return (x,t',False)) args >>= \args' ->
                 maybe (return TUnit) lookupTypeErr mres >>= \res -> 
-                    pushEnv >> mapM (uncurry insertVType) args' >>
-                        let ftype = TFunc (map snd args') res
+                    pushEnv >> mapM (\(x,t,_) -> insertVType x t) args' >>
+                        let ftype = TFunc (map (\(_,t,_) -> t) args') res
                         in insertVType fid ftype >> checkExpr exp >>= \(exp', texp) ->
                             if texp == res
                                then popEnv >> insertVType fid ftype >>

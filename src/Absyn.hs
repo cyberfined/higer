@@ -67,12 +67,13 @@ showdec pr cpr dec = case dec of
         UntypedVar v mt exp -> case mt of
             Nothing -> pr ++ "=\n" ++ cpr ++ "├── var " ++ v ++ '\n':showexpr (cpr ++ "└── ") (cpr ++ "    ") exp
             Just t -> pr ++ "=\n" ++ cpr ++ "├── var " ++ v ++ ": " ++ t ++ '\n':showexpr (cpr ++ "└── ") (cpr ++ "    ") exp
-        TypedVar v t exp -> pr ++ "=\n" ++ cpr ++ "├── var " ++ v ++ ": " ++ show t ++ '\n':showexpr (cpr ++ "└── ") (cpr ++ "    ") exp
+        TypedVar v t esc exp -> pr ++ "=\n" ++ cpr ++ "├── var " ++ v ++ ": " ++ show t ++ (if esc then " [escaping]" else "") ++ '\n':showexpr (cpr ++ "└── ") (cpr ++ "    ") exp
     FunDec _ fd -> case fd of
         UntypedFun f xs mt exp -> case mt of
             Nothing -> pr ++ "=\n" ++ cpr ++ "├── function " ++ f ++ "( " ++ fields xs ++ " )\n" ++ showexpr (cpr ++ "└── ") (cpr ++ "    ") exp
             Just t -> pr ++ "=\n" ++ cpr ++ "├── function " ++ f ++ "( " ++ fields xs ++ " ): " ++ t ++ '\n':showexpr (cpr ++ "└── ") (cpr ++ "    ") exp
-        TypedFun f xs t exp -> pr ++ "=\n" ++ cpr ++ "├── function " ++ f ++ "( " ++ typedFields xs ++ " ): " ++ show t ++ '\n':showexpr (cpr ++ "└── ") (cpr ++ "    ") exp
+        TypedFun f xs t exp -> pr ++ "=\n" ++ cpr ++ "├── function " ++ f ++ "( " ++ escTypedFields xs ++ " ): " ++ show t ++ '\n':showexpr (cpr ++ "└── ") (cpr ++ "    ") exp
+          where escTypedFields = intercalate ", " . map (\(x,t,e) -> x ++ ": " ++ show t ++ (if e then " [escaping]" else ""))
 
 fields :: [(String, String)] -> String
 fields = intercalate ", " . map (\(x,t) -> x ++ ": " ++ t)
@@ -85,11 +86,11 @@ data TypeDec = UntypedType String TypeRval
              deriving Eq
 
 data VarDec = UntypedVar String (Maybe String) Expr
-            | TypedVar String Type Expr
+            | TypedVar String Type Bool Expr
             deriving Eq
 
 data FunDec = UntypedFun String [(String, String)] (Maybe String) Expr
-            | TypedFun String [(String, Type)] Type Expr
+            | TypedFun String [(String, Type, Bool)] Type Expr
             deriving Eq
 
 data TypeRval = TypeId String
@@ -130,7 +131,7 @@ data Expr = LVal SourcePos LVal
           | Assign SourcePos LVal Expr
           | If SourcePos Expr Expr (Maybe Expr)
           | While SourcePos Expr Expr
-          | For SourcePos String Expr Expr Expr
+          | For SourcePos String Bool Expr Expr Expr
           | Break SourcePos
           | Let SourcePos [Dec] Expr
           deriving Eq
@@ -150,7 +151,7 @@ instance Posable Expr where
         Assign sc _ _ -> sc
         If sc _ _ _ -> sc
         While sc _ _ -> sc
-        For sc _ _ _ _ -> sc
+        For sc _ _ _ _ _ -> sc
         Break sc -> sc
         Let sc _ _ -> sc
 
@@ -175,8 +176,8 @@ showexpr pr cpr e = case e of
                   Nothing -> showexpr (cpr ++ "├── ") (cpr ++ "│   ") cond ++ cpr ++ "└── then\n" ++ showsub "    " th
                   Just el -> showexpr (cpr ++ "├── ") (cpr ++ "│   ") cond ++ cpr ++ "├── then\n" ++ showsub "│   " th ++ cpr ++ "└── else\n" ++ showsub "    " el
     While _ cond lp -> pr ++ "while\n" ++ showexpr (cpr ++ "├── ") (cpr ++ "│   ") cond ++ cpr ++ "└── do\n" ++ showsub "    " lp
-    For _ i e1 e2 e3 ->
-        pr ++ "for\n" ++ showexpr (cpr ++ "├── ") (cpr ++ "│   ") (Assign undefined (LId i) e1) ++ cpr ++ "├── to\n" ++ showsub "│   " e2 ++ cpr ++ "└── do\n" ++ showsub "    " e3
+    For _ i esc e1 e2 e3 ->
+        pr ++ "for" ++ '\n':showdec (cpr ++ "├── ") (cpr ++ "│   ") (VarDec undefined (TypedVar i TInt esc e1)) ++ cpr ++ "├── to\n" ++ showsub "│   " e2 ++ cpr ++ "└── do\n" ++ showsub "    " e3
     Break _ -> pr ++ "break\n"
     Let _ ds exp -> pr ++ "let\n" ++ showlet ds exp
   where showList (x:xs@(_:_)) = showexpr (cpr ++ "├── " ) (cpr ++ "│   ") x ++ showList xs

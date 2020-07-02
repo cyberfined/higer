@@ -93,7 +93,7 @@ expr = buildExpressionParser operators term
                     (idTok <* token AssignTok) >>= \(IdTok v) ->
                         (expr <* token ToTok) >>= \e1 ->
                             (expr <* token DoTok) >>= \e2 ->
-                                expr >>= \e3 -> return $ For sc v e1 e2 e3
+                                expr >>= \e3 -> return $ For sc v False e1 e2 e3
                 lvalFactor = srcPos >>= \sc -> lval >>= \lv ->
                     optionMaybe (token AssignTok >> expr) >>=
                         return . maybe (LVal sc lv) (Assign sc lv)
