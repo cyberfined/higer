@@ -2,6 +2,7 @@ module Main where
 
 import Parser
 import TypeCheck
+import EscapeAnalysis
 
 import Text.Parsec
 
@@ -11,4 +12,4 @@ main = parseFromFile exprRoot "test.tig" >>= \res ->
         Left err -> putStrLn err
         Right tree -> case runTypeCheck tree of
             Left err -> putStrLn err
-            Right tree' -> print tree'
+            Right tree' -> print $ runEscapeAnalysis tree'
