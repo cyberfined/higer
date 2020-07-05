@@ -160,12 +160,12 @@ checkLVal sc lv = case lv of
         Just t -> case t of
             TFunc{} -> throwErr sc $ x ++ " is a function, not a variable"
             _ -> return (LId x, t)
-    LDot lv f -> checkLVal sc lv >>= \(lv', tlv) -> case tlv of
-        r@(TRecord _ fs) -> case lookup f fs of
+    LDot lv f _ -> checkLVal sc lv >>= \(lv', tlv) -> case tlv of
+        r@(TRecord _ fs) -> case lookupField f fs of
             Nothing -> throwErr sc $ "record have no field " ++ f
-            Just t -> case t of
-                TRecursive -> return (LDot lv' f, r)
-                _ -> return (LDot lv' f, t)
+            Just (n, t) -> case t of
+                TRecursive -> return (LDot lv' f n, r)
+                _ -> return (LDot lv' f n, t)
         _ -> throwErr sc $ "cannot access field " ++ f ++ " from non-record type"
     LArr lv ind -> checkLVal sc lv >>= \(lv', tlv) -> case tlv of
         TArray t -> checkExpr ind >>= \(ind', tind) ->
@@ -173,6 +173,11 @@ checkLVal sc lv = case lv of
                then return (LArr lv' ind', t)
                else wrongType ind "int" (show tind)
         _ -> throwErr sc "cannot index non-array variable"
+  where lookupField = lookupField' 1
+          where lookupField' n sf ((f,t):fs)
+                  | sf == f = Just (n, t)
+                  | otherwise = lookupField' (n+1) sf fs
+                lookupField' _ _ _ = Nothing
 
 checkCall :: Expr -> CheckStateT (Expr, Type)
 checkCall (Call sc fun args) = lookupVType fun >>= \mf -> case mf of

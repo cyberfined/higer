@@ -97,7 +97,7 @@ escapeAnalysis expr = case expr of
 escapeLVal :: LVal -> EscapeStateT LVal
 escapeLVal lv = case lv of
     LId var -> setEscape var >> return lv
-    LDot lv f -> escapeLVal lv >>= \lv' -> return (LDot lv' f)
+    LDot lv f off -> escapeLVal lv >>= \lv' -> return (LDot lv' f off)
     LArr lv expr -> escapeLVal lv >>= \lv' ->
         escapeAnalysis expr >>= \expr' -> 
             return (LArr lv' expr')

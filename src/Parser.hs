@@ -116,13 +116,13 @@ lval = ident >>= \lv -> optionMaybe (many1 (token DotTok >> ident)) >>= return .
           where z = dot x y
         dotSeq [x] = x
         dot x y = case y of
-            LId name -> LDot x name
-            LDot name sub -> LDot (deep x name) sub
+            LId name -> LDot x name undefined
+            LDot name sub off -> LDot (deep x name) sub off
             LArr name ind -> LArr (deep x name) ind
         deep x lv = case lv of
-            LId name -> LDot x name
+            LId name -> LDot x name undefined
             LArr name ids -> LArr (deep x name) ids
-            LDot y z -> LDot (deep x y) z
+            LDot y z off -> LDot (deep x y) z off
 
 operators :: OperatorTable [PosToken] () Identity Expr
 operators = [ [ Prefix (token MinusTok >> Neg <$> srcPos) ] 

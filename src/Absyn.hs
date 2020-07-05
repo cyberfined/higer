@@ -104,9 +104,9 @@ instance Show TypeRval where
         TypeRecord xs -> "{ " ++ fields xs ++ " }"
         TypeArray t -> "array of " ++ t
 
-data LVal = LId String
-          | LDot LVal String
-          | LArr LVal Expr
+data LVal = LId String            -- var
+          | LDot LVal String Int  -- lvalue fields field num
+          | LArr LVal Expr        -- lvalue index
           deriving Eq
 
 instance Show LVal where
@@ -115,7 +115,7 @@ instance Show LVal where
 showlval :: String -> String -> LVal -> String
 showlval pr cpr lv = case lv of
     LId x -> pr ++ x ++ "\n"
-    LDot x y -> pr ++ ".\n" ++ showlval (cpr ++ "├── " ) (cpr ++ "│   ") x ++ cpr ++ "└── " ++ y ++ "\n"
+    LDot x y _ -> pr ++ ".\n" ++ showlval (cpr ++ "├── " ) (cpr ++ "│   ") x ++ cpr ++ "└── " ++ y ++ "\n"
     LArr x y -> pr ++ "[]\n" ++ showlval (cpr ++ "├── " ) (cpr ++ "│   ") x ++ showexpr (cpr ++ "└── ") (cpr ++ "    ") y
 
 data Expr = LVal SourcePos LVal
