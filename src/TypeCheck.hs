@@ -173,7 +173,7 @@ checkLVal sc lv = case lv of
                then return (LArr lv' ind', t)
                else wrongType ind "int" (show tind)
         _ -> throwErr sc "cannot index non-array variable"
-  where lookupField = lookupField' 1
+  where lookupField = lookupField' 0
           where lookupField' n sf ((f,t):fs)
                   | sf == f = Just (n, t)
                   | otherwise = lookupField' (n+1) sf fs
