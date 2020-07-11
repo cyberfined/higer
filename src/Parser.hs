@@ -139,7 +139,7 @@ operators = [ [ Prefix (token MinusTok >> Neg <$> srcPos) ]
               , binop GeTok Ge AssocNone
               , binop LeTok Le AssocNone
               ]
-            , [ binop AmpTok And AssocNone ]
-            , [ binop VLineTok Or AssocNone ]
+            , [ binop AmpTok And AssocLeft ]
+            , [ binop VLineTok Or AssocLeft ]
             ]
   where binop tok cons assoc = Infix (token tok >> srcPos >>= \sc -> return (\e1 e2 -> BinOp sc e1 cons e2)) assoc
