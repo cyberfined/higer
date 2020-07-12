@@ -136,7 +136,7 @@ checkExpr exp = case exp of
            then checkExpr to >>= \(to', tto) ->
                if tto == TInt
                   then pushEnv >> insertVType v TInt >> withInLoop (checkExpr th) >>= \(th', tth) -> popEnv >> return (For sc v esc from' to' th', TUnit)
-                  else throwErr to $ "type mismatch in for to expression: expected int but give " ++ show tto
+                  else throwErr to $ "type mismatch in for to expression: expected int but given " ++ show tto
            else throwErr from $ "type mismatch in for assignment expression: expected int but given " ++ show tfrom
     Break sc -> getInLoop >>= \inLoop ->
         if inLoop
