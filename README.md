@@ -7,5 +7,5 @@ Tiger compiler written in haskell
 - [x] Lexer
 - [x] Parser
 - [x] Type checker
-- [ ] Intermediate code generation
+- [x] Intermediate code generation
 - [ ] Assembly language code generation
