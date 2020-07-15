@@ -202,7 +202,7 @@ checkRecord :: Expr -> CheckStateT (Expr, Type)
 checkRecord (Record sc rec fs) = lookupType rec >>= \mt -> case mt of
     Nothing -> throwErr sc $ "undefined record type " ++ rec
     Just t -> case t of
-        rett@(TRecord _ tfs) -> checkTypes fs tfs >>= \fs' -> return (Record sc rec fs', rett)
+        rett@(TRecord _ tfs) -> checkTypes fs tfs >>= \fs' -> return (Record sc rec (complFields fs' tfs), rett)
           where checkTypes ((fid,fex):fs) tfs = case lookup fid tfs of
                   Nothing -> throwErr sc $ "record type " ++ rec ++ " have no field " ++ fid
                   Just expt -> checkExpr fex >>= \(fex', tfex) ->
@@ -210,6 +210,10 @@ checkRecord (Record sc rec fs) = lookupType rec >>= \mt -> case mt of
                          then checkTypes fs tfs >>= \fs' -> return ((fid,fex'):fs')
                          else throwErr sc $ "wrong type of expression assigned to record " ++ rec ++ " field " ++ fid ++ ": expected " ++ show expt ++ " but given " ++ show tfex
                 checkTypes _ _ = return []
+                complFields fs ((t,_):tfs) = case lookup t fs of
+                    Nothing -> (t, Nil sc):complFields fs tfs
+                    Just v -> (t, v):complFields fs tfs
+                complFields _ _ = []
         _ -> throwErr sc $ rec ++ " is not a record type"
 
 checkDecs :: [Dec] -> CheckStateT [Dec]
