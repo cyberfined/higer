@@ -215,5 +215,5 @@ instance Show BinOp where
         Ge -> ">="
         Eq -> "="
         Ne -> "<>"
-        And -> "&"
-        Or -> "|"
+        And -> "and"
+        Or -> "or"
