@@ -11,11 +11,13 @@ import Absyn
 
 data EscapeState = EscapeState { escparams :: [M.Map String Bool]
                                , escvars :: [M.Map String Bool]
+                               , infuncs :: [Bool]
                                }
 
 initEscapeState :: EscapeState
 initEscapeState = EscapeState { escparams = [M.empty]
                               , escvars = [M.empty]
+                              , infuncs = [True]
                               }
 
 type EscapeStateT a = StateT EscapeState Identity a
@@ -30,17 +32,17 @@ insertEscVar :: String -> EscapeStateT ()
 insertEscVar var = modify (\st -> let (v:vs) = escvars st in st{escvars = (M.insert var False v):vs})
 
 enterFun :: [(String, Type, Bool)] -> EscapeStateT ()
-enterFun args = modify (\st -> st{escparams = M.empty:escparams st, escvars = M.empty:escvars st}) >>
+enterFun args = modify (\st -> st{escparams = M.empty:escparams st, escvars = M.empty:escvars st, infuncs = True:infuncs st}) >>
     mapM_ (\(v,_,_) -> insertEscParam v) args
 
 leaveFun :: EscapeStateT ()
-leaveFun = modify (\st -> st{escparams = tail $ escparams st, escvars = tail $ escvars st})
+leaveFun = modify (\st -> st{escparams = tail $ escparams st, escvars = tail $ escvars st, infuncs = tail $ infuncs st})
 
 enterLet :: EscapeStateT ()
-enterLet = modify (\st -> st{escparams = M.empty:escparams st, escvars = M.empty:escvars st})
+enterLet = modify (\st -> st{escparams = M.empty:escparams st, escvars = M.empty:escvars st, infuncs = False:infuncs st})
 
 leaveLet :: EscapeStateT ()
-leaveLet = modify (\st -> st{escparams = tail $ escparams st, escvars = tail $ escvars st})
+leaveLet = modify (\st -> st{escparams = tail $ escparams st, escvars = tail $ escvars st, infuncs = tail $ infuncs st})
 
 escapeAnalysis :: Expr -> EscapeStateT Expr
 escapeAnalysis expr = case expr of
@@ -76,8 +78,12 @@ escapeAnalysis expr = case expr of
                                        }
                 in put st'' >>
                    return (For sc v esc' from' to' expr')
-    Let sc decs expr -> enterLet >> mapM fStage decs >>= mapM sStage >>= \decs' ->
-        escapeAnalysis expr >>= \expr' -> leaveLet >> return (Let sc decs' expr')
+    Let sc decs expr -> enterLet >>
+                        mapM fStage decs >>= \decs' ->
+                        escapeAnalysis expr >>= \expr' ->
+                        mapM sStage decs' >>= \decs'' ->
+                        leaveLet >>
+                        return (Let sc decs'' expr')
     expr -> return expr
   where fStage dec = case dec of
           t@(TypeDec{}) -> return t
@@ -112,12 +118,14 @@ escapeSeq exs
           in put st' >> return exs'
   where mergeStates st1 st2 = EscapeState { escparams = zipWith (M.unionWith (||)) (escparams st1) (escparams st2)
                                           , escvars = zipWith (M.unionWith (||)) (escvars st1) (escvars st2)
+                                          , infuncs = infuncs st1
                                           }
 
 setEscape :: String -> EscapeStateT ()
 setEscape var = get >>= \st ->
     let ps = escparams st
         vs = escvars st
+        infs = infuncs st
         (p:ps') = ps
         (v:vs') = vs
     in if length ps <= 1
@@ -125,9 +133,17 @@ setEscape var = get >>= \st ->
           else case (M.lookup var v, M.lookup var p) of
               (Just _, _) -> return ()
               (_, Just _) -> return ()
-              _ -> let (ps'', vs'') = setEscape' var ps' vs'
-                   in put (EscapeState (p:ps'') (v:vs''))
+              _ -> let (ps'', vs'') = if head infs
+                                         then setEscape' var ps' vs'
+                                         else skipFalses var ps' vs' (tail infs)
+                   in put (EscapeState (p:ps'') (v:vs'') infs)
   where setEscape' var (p:ps) (v:vs) = case (M.lookup var v, M.lookup var p) of
           (Just _, _) -> (p:ps, (M.insert var True v):vs)
           (_, Just _) -> ((M.insert var True p):ps, v:vs)
           _ -> let (ps', vs') = setEscape' var ps vs in ((p:ps'), (v:vs'))
+        setEscape' var ps vs = error $ "Failed to found " ++ var
+        skipFalses var (p:ps) (v:vs) (i:is)
+          | i = case M.lookup var p of
+              Nothing -> let (ps', vs') = setEscape' var ps vs in (p:ps', v:vs')
+              Just _ -> (p:ps, v:vs)
+          | otherwise = let (ps', vs') = skipFalses var ps vs is in (p:ps', v:vs')
