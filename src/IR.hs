@@ -17,6 +17,7 @@ import Data.List((\\), intercalate, delete)
 import Control.Monad(mapM, mapM_, replicateM, when, foldM)
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
+import qualified LibFuncs as LF
 import qualified Absyn as A
 
 class Platform p where
@@ -335,16 +336,16 @@ arraySizeOffset :: Int
 arraySizeOffset = 2
 
 initString :: IR -> IR
-initString s = Call "initString" [s]
+initString s = Call LF.initStringFunc [s]
 
 initRecord :: [IR] -> IR
-initRecord = Call "initRecord"
+initRecord = Call LF.initRecordFunc
 
 initArray :: [IR] -> IR
-initArray = Call "initArray"
+initArray = Call LF.initArrayFunc
 
 fatalError :: IR -> IR
-fatalError arg = Call "fatal" [arg]
+fatalError arg = Call LF.fatalErrorFunc [arg]
 
 transDec :: A.Dec -> IRStateT ()
 transDec dec = case dec of

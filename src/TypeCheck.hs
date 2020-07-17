@@ -8,6 +8,7 @@ import Control.Monad.Trans.State
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.Class(lift)
 import Data.Functor.Identity
+import qualified LibFuncs as LF
 import Absyn
 
 data Symtab = Symtab { types :: M.Map String Type
@@ -17,17 +18,7 @@ data Symtab = Symtab { types :: M.Map String Type
 initSymtab :: Symtab
 initSymtab = Symtab types vars
   where types = (M.fromList [("int", TInt), ("string", TString)])
-        vars = M.fromList [ ("print", TFunc [TString] TUnit)
-                          , ("flush", TFunc [] TUnit)
-                          , ("getchar", TFunc [] TString)
-                          , ("ord", TFunc [TString] TInt)
-                          , ("chr", TFunc [TInt] TString)
-                          , ("size", TFunc [TString] TInt)
-                          , ("substring", TFunc [TString, TInt, TInt] TString)
-                          , ("concat", TFunc [TString, TString] TString)
-                          , ("not", TFunc [TInt] TInt)
-                          , ("exit", TFunc [TInt] TUnit)
-                          ]
+        vars = M.fromList LF.funTypes
 
 data CheckState = CheckState { env :: [Symtab]
                              , inLoop :: Bool
