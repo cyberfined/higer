@@ -3,7 +3,7 @@ module TypeCheck (
     ) where
 
 import qualified Data.Map as M
-import Control.Monad(mapM)
+import Control.Monad(mapM, mapM_)
 import Control.Monad.Trans.State
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.Class(lift)
@@ -17,7 +17,7 @@ data Symtab = Symtab { types :: M.Map String Type
 
 initSymtab :: Symtab
 initSymtab = Symtab types vars
-  where types = (M.fromList [("int", TInt), ("string", TString)])
+  where types = M.fromList [("int", TInt), ("string", TString)]
         vars = M.fromList LF.funTypes
 
 data CheckState = CheckState { env :: [Symtab]
@@ -36,19 +36,19 @@ popEnv :: CheckStateT ()
 popEnv = modify (\(CheckState (e:es) inLoop) -> CheckState es inLoop)
 
 lookupType :: String -> CheckStateT (Maybe Type)
-lookupType t = get >>= return . M.lookup t . types . head . env
+lookupType t = M.lookup t . types . head . env <$> get
 
 insertType :: String -> Type -> CheckStateT ()
 insertType v t = modify (\(CheckState (e:es) inLoop) -> CheckState ((e{types = M.insert v t $ types e}):es) inLoop)
 
 lookupVType :: String -> CheckStateT (Maybe Type)
-lookupVType v = get >>= return . M.lookup v . vars . head . env
+lookupVType v = M.lookup v . vars . head . env <$> get
 
 insertVType :: String -> Type -> CheckStateT ()
 insertVType v t = modify (\(CheckState (e:es) inLoop) -> CheckState ((e{vars = M.insert v t $ vars e}):es) inLoop)
 
 getInLoop :: CheckStateT Bool
-getInLoop = get >>= return . inLoop
+getInLoop = inLoop <$> get
 
 setInLoop :: Bool -> CheckStateT ()
 setInLoop v = modify (\(CheckState env _) -> CheckState env v)
@@ -64,7 +64,7 @@ wrongType :: Posable p => p -> String -> String -> CheckStateT a
 wrongType p t1 t2 = throwErr p $ "wrong type: expected " ++ show t1 ++ " but given " ++ show t2
 
 runTypeCheck :: Expr -> Either String Expr
-runTypeCheck expr = fst <$> (runIdentity $ runExceptT $ evalStateT (checkExpr expr) initCheckState)
+runTypeCheck expr = fst <$> runIdentity (runExceptT $ evalStateT (checkExpr expr) initCheckState)
 
 checkExpr :: Expr -> CheckStateT (Expr, Type)
 checkExpr exp = case exp of
@@ -76,7 +76,7 @@ checkExpr exp = case exp of
     n@(Neg sc expr) -> checkExpr expr >>= \(expr', t) -> if t == TInt
                                                             then return (Neg sc expr', t)
                                                             else wrongType expr "int" (show t)
-    c@(Call{}) -> checkCall c
+    c@Call{} -> checkCall c
     BinOp sc e1 op e2 -> case op of
         Eq -> eqne
         Ne -> eqne
@@ -92,7 +92,7 @@ checkExpr exp = case exp of
                   if isValidAssign t1 t2
                      then return (BinOp sc e1' op e2', TInt)
                      else throwErr sc $ "type mismatch in " ++ show op ++ " operation: trying to compare " ++ show t1 ++ " with " ++ show t2
-    r@(Record{}) -> checkRecord r
+    r@Record{} -> checkRecord r
     Array sc at e1 e2 -> lookupType at >>= \mat -> case mat of
         Nothing -> throwErr sc $ "undefined array type " ++ at
         Just at' -> case at' of
@@ -217,7 +217,7 @@ checkDecs decs = fStage decs [] [] >>= sStage
                      TypeId syn -> insertType' tid (TName syn)
                      TypeRecord fs -> insertType' tid (TRecord tid $ map (\(x,t) -> (x,TName t)) fs)
                      TypeArray t -> insertType' tid (TArray (TName t))
-            where insertType' tid t = insertType tid t >> fStage ds (tid:types) vars >>= \decs' -> return ((TypeDec sc (TypedType tid t)):decs')
+            where insertType' tid t = insertType tid t >> fStage ds (tid:types) vars >>= \decs' -> return (TypeDec sc (TypedType tid t):decs')
           v@(VarDec sc (UntypedVar vid _ _)) -> case lookup vid vars of
               Nothing -> fStage ds types ((vid,"variable"):vars) >>= \decs' -> return (v:decs')
               Just vt -> throwErr sc $ "redeclaration of " ++ vt ++ " " ++ vid
@@ -226,25 +226,25 @@ checkDecs decs = fStage decs [] [] >>= sStage
               Just vt -> throwErr sc $ "redeclaration of " ++ vt ++ " " ++ fid
         fStage _ _ _ = return []
         sStage (d:ds) = case d of
-            TypeDec sc (TypedType tid t) -> resolveType sc t [] >>= \t' -> insertType tid t' >> sStage ds >>= \decs' -> return ((TypeDec sc (TypedType tid t')):decs')
+            TypeDec sc (TypedType tid t) -> resolveType sc t [] >>= \t' -> insertType tid t' >> sStage ds >>= \decs' -> return (TypeDec sc (TypedType tid t'):decs')
             VarDec sc (UntypedVar vid mt exp) -> checkExpr exp >>= \(exp', texp) ->
                 case mt of
                     Nothing -> if texp == TUnit || texp == TNil
-                                  then throwErr sc $ "assign no valued expression to untyped variable"
-                                  else insertVType vid texp >> sStage ds >>= \decs' -> return ((VarDec sc (TypedVar vid texp False exp')):decs')
+                                  then throwErr sc "assign no valued expression to untyped variable"
+                                  else insertVType vid texp >> sStage ds >>= \decs' -> return (VarDec sc (TypedVar vid texp False exp'):decs')
                     Just svt -> lookupType svt >>= \mvt -> case mvt of
                         Nothing -> throwErr sc $ "undefined type " ++ svt
                         Just vt -> if isValidAssign vt texp
-                                      then insertVType vid vt >> sStage ds >>= \decs' -> return ((VarDec sc (TypedVar vid vt False exp')):decs')
+                                      then insertVType vid vt >> sStage ds >>= \decs' -> return (VarDec sc (TypedVar vid vt False exp'):decs')
                                       else throwErr sc $ "type mismatch in creation of variable " ++ vid ++ ": expected " ++ show vt ++ " but given " ++ show texp
             FunDec sc (UntypedFun fid args mres exp) -> mapM (\(x,t) -> lookupTypeErr t >>= \t' -> return (x,t',False)) args >>= \args' ->
-                maybe (return TUnit) lookupTypeErr mres >>= \res -> 
-                    pushEnv >> mapM (\(x,t,_) -> insertVType x t) args' >>
+                maybe (return TUnit) lookupTypeErr mres >>= \res ->
+                    pushEnv >> mapM_ (\(x,t,_) -> insertVType x t) args' >>
                         let ftype = TFunc (map (\(_,t,_) -> t) args') res
                         in insertVType fid ftype >> checkExpr exp >>= \(exp', texp) ->
                             if texp == res
                                then popEnv >> insertVType fid ftype >>
-                                   sStage ds >>= \decs' -> return ((FunDec sc (TypedFun fid args' res exp')):decs')
+                                   sStage ds >>= \decs' -> return (FunDec sc (TypedFun fid args' res exp'):decs')
                                else throwErr exp $ "type mismatch in body of function " ++ fid ++ ": expected " ++ show res ++ " but given " ++ show texp
               where lookupTypeErr t = lookupType t >>= \mt -> case mt of
                       Nothing -> throwErr sc $ "undefined type " ++ t
@@ -255,9 +255,9 @@ checkDecs decs = fStage decs [] [] >>= sStage
             TString -> return TString
             TArray t -> resolveType sc t visited >>= \t' ->
                 if isArray t'
-                   then throwErr sc $ "multidimensional arrays aren't supported"
+                   then throwErr sc "multidimensional arrays aren't supported"
                    else return $ TArray t'
-            TRecord rec fs -> mapM (\(x,t) -> (if isRecursiveType rec t then return TRecursive else resolveType sc t []) >>= \t' -> return (x,t')) fs >>= return . TRecord rec
+            TRecord rec fs -> TRecord rec <$> mapM (\(x,t) -> (if isRecursiveType rec t then return TRecursive else resolveType sc t []) >>= \t' -> return (x,t')) fs
             TName syn -> if elem syn visited
                             then throwErr sc "cycle in type synonym"
                             else lookupType syn >>= \mt -> case mt of

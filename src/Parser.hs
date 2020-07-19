@@ -64,22 +64,22 @@ dec :: Parser Dec
 dec = typeParser <|> varParser <|> funParser
   where typeParser = srcPos >>= \sc -> token TypeTok >> (idTok <* token EqTok) >>= \(IdTok tid) -> ty >>= \rv -> return $ TypeDec sc $ UntypedType tid rv
         ty = (idTok >>= \(IdTok n) -> return $ TypeId n)                                     <|>
-             (braces (tyfields sepBy1) >>= return . TypeRecord)                                       <|>
+             (TypeRecord <$> braces (tyfields sepBy1))                                       <|>
              (token ArrayTok >> token OfTok >> idTok >>= \(IdTok n) -> return $ TypeArray n)
         tyfields sep = sep (idTok >>= \(IdTok v) -> (token ColonTok >> idTok) >>= \(IdTok t) -> return (v,t)) (token ComaTok)
         varParser = srcPos >>= \sc -> token VarTok >> idTok >>= \(IdTok v) ->
             optionMaybe (token ColonTok >> idTok >>= \(IdTok n) -> return n) >>=
-                \mtid -> token AssignTok >> expr >>= return . VarDec sc . UntypedVar v mtid
+                \mtid -> VarDec sc . UntypedVar v mtid <$> (token AssignTok >> expr)
         funParser = srcPos >>= \sc -> token FunTok >> idTok >>= \(IdTok f) ->
             parens (tyfields sepBy) >>= \prs ->
                 optionMaybe (token ColonTok >> idTok >>= \(IdTok n) -> return n) >>=
-                    \mtid -> token EqTok >> expr >>= return . FunDec sc . UntypedFun f prs mtid
+                    \mtid -> FunDec sc . UntypedFun f prs mtid <$> (token EqTok >> expr)
 
 expr :: Parser Expr
 expr = buildExpressionParser operators term
-  where term = (try idFactor)                                                                                  <|>
+  where term = try idFactor                                                                                    <|>
                lvalFactor                                                                                      <|>
-               (parens seqParser)                                                                              <|>
+               parens seqParser                                                                                <|>
                (Nil <$> srcPos <* token NilTok)                                                                <|>
                (srcPos >>= \sc -> intTok >>= \(IntTok v) -> return $ IntLit sc v)                              <|>
                (srcPos >>= \sc -> strTok >>= \(StrTok v) -> return $ StrLit sc v)                              <|>
@@ -88,28 +88,27 @@ expr = buildExpressionParser operators term
                forParser                                                                                       <|>
                (Break <$> srcPos <* token BreakTok)                                                            <|>
                (Let <$> srcPos <*> (token LetTok *> many1 dec) <*> (token InTok *> seqParser <* token EndTok))
-          where ifParser = (If <$> srcPos <*> (token IfTok *> expr) <*> (token ThenTok *> expr) <*> (optionMaybe $ token ElseTok *> expr))
+          where ifParser = If <$> srcPos <*> (token IfTok *> expr) <*> (token ThenTok *> expr) <*> optionMaybe (token ElseTok *> expr)
                 forParser = srcPos >>= \sc -> token ForTok >>
                     (idTok <* token AssignTok) >>= \(IdTok v) ->
                         (expr <* token ToTok) >>= \e1 ->
                             (expr <* token DoTok) >>= \e2 ->
                                 expr >>= \e3 -> return $ For sc v False e1 e2 e3
                 lvalFactor = srcPos >>= \sc -> lval >>= \lv ->
-                    optionMaybe (token AssignTok >> expr) >>=
-                        return . maybe (LVal sc lv) (Assign sc lv)
+                    maybe (LVal sc lv) (Assign sc lv) <$> optionMaybe (token AssignTok >> expr)
                 seqParser = srcPos >>= \sc -> sepBy1 expr (token SemicolonTok) >>=
                     \exprs -> return $ if length exprs == 1
                                           then head exprs
                                           else Seq sc exprs
                 idFactor = srcPos >>= \sc -> idTok >>= \(IdTok n) ->
-                    (parens (sepBy expr (token ComaTok)) >>= return . Call sc n)                       <|>
-                    (braces (sepBy field (token ComaTok)) >>= return . Record sc n)                     <|>
+                    (Call sc n <$> parens (sepBy expr (token ComaTok)))                                 <|>
+                    (Record sc n <$> braces (sepBy field (token ComaTok)))                              <|>
                     (brackets expr >>= \e1 -> token OfTok >> expr >>= \e2 -> return $ Array sc n e1 e2)
                 field = idTok >>= \(IdTok n) -> token EqTok >> expr >>= \exp -> return (n, exp)
 
 lval :: Parser LVal
-lval = ident >>= \lv -> optionMaybe (many1 (token DotTok >> ident)) >>= return . maybe lv (\rest -> dotSeq $ lv:rest)
-  where ident = idTok >>= \(IdTok name) -> optionMaybe (brackets expr) >>= return . maybe (LId name) (LArr (LId name))
+lval = ident >>= \lv -> maybe lv (\rest -> dotSeq $ lv:rest) <$> optionMaybe (many1 (token DotTok >> ident))
+  where ident = idTok >>= \(IdTok name) -> maybe (LId name) (LArr (LId name)) <$> optionMaybe (brackets expr)
         dotSeq (x:y:xs)
           | null xs = z
           | otherwise = dot z (dotSeq xs)
@@ -125,7 +124,7 @@ lval = ident >>= \lv -> optionMaybe (many1 (token DotTok >> ident)) >>= return .
             LDot y z off -> LDot (deep x y) z off
 
 operators :: OperatorTable [PosToken] () Identity Expr
-operators = [ [ Prefix (token MinusTok >> Neg <$> srcPos) ] 
+operators = [ [ Prefix (token MinusTok >> Neg <$> srcPos) ]
             , [ binop StarTok Mul AssocLeft
               , binop SlashTok Div AssocLeft
               ]
@@ -142,4 +141,4 @@ operators = [ [ Prefix (token MinusTok >> Neg <$> srcPos) ]
             , [ binop AmpTok And AssocLeft ]
             , [ binop VLineTok Or AssocLeft ]
             ]
-  where binop tok cons assoc = Infix (token tok >> srcPos >>= \sc -> return (\e1 e2 -> BinOp sc e1 cons e2)) assoc
+  where binop tok cons = Infix (token tok >> srcPos >>= \sc -> return (\e1 e2 -> BinOp sc e1 cons e2))

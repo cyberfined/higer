@@ -5,7 +5,7 @@ module EscapeAnalysis (
 import Control.Monad.Trans.State
 import Data.Functor.Identity
 import Data.Maybe(fromJust)
-import Control.Monad(mapM, mapM_)
+import Control.Monad((>=>), mapM, mapM_)
 import qualified Data.Map as M
 import Absyn
 
@@ -26,10 +26,10 @@ runEscapeAnalysis :: Expr -> Expr
 runEscapeAnalysis expr = runIdentity $ evalStateT (escapeAnalysis expr) initEscapeState
 
 insertEscParam :: String -> EscapeStateT ()
-insertEscParam par = modify (\st -> let (p:ps) = escparams st in st{escparams = (M.insert par False p):ps})
+insertEscParam par = modify (\st -> let (p:ps) = escparams st in st{escparams = M.insert par False p:ps})
 
 insertEscVar :: String -> EscapeStateT ()
-insertEscVar var = modify (\st -> let (v:vs) = escvars st in st{escvars = (M.insert var False v):vs})
+insertEscVar var = modify (\st -> let (v:vs) = escvars st in st{escvars = M.insert var False v:vs})
 
 enterFun :: [(String, Type, Bool)] -> EscapeStateT ()
 enterFun args = modify (\st -> st{escparams = M.empty:escparams st, escvars = M.empty:escvars st, infuncs = True:infuncs st}) >>
@@ -71,10 +71,10 @@ escapeAnalysis expr = case expr of
                     esc' = fromJust $ M.lookup v v'
                     st'' = case oldV of
                         Nothing -> st'{ escparams = p':ps'
-                                      , escvars = (M.delete v v'):vs'
+                                      , escvars = M.delete v v':vs'
                                       }
                         Just val -> st'{ escparams = p':ps'
-                                       , escvars = (M.insert v val v'):vs'
+                                       , escvars = M.insert v val v':vs'
                                        }
                 in put st'' >>
                    return (For sc v esc' from' to' expr')
@@ -86,7 +86,7 @@ escapeAnalysis expr = case expr of
                         return (Let sc decs'' expr')
     expr -> return expr
   where fStage dec = case dec of
-          t@(TypeDec{}) -> return t
+          t@TypeDec{} -> return t
           VarDec sc (TypedVar v t esc expr) -> insertEscVar v >> escapeAnalysis expr >>= \expr' ->
               return (VarDec sc (TypedVar v t esc expr'))
           FunDec sc (TypedFun f args t expr) -> enterFun args >>
@@ -105,14 +105,14 @@ escapeLVal lv = case lv of
     LId var -> setEscape var >> return lv
     LDot lv f off -> escapeLVal lv >>= \lv' -> return (LDot lv' f off)
     LArr lv expr -> escapeLVal lv >>= \lv' ->
-        escapeAnalysis expr >>= \expr' -> 
+        escapeAnalysis expr >>= \expr' ->
             return (LArr lv' expr')
 
 escapeSeq :: [Expr] -> EscapeStateT [Expr]
 escapeSeq exs
-  | length exs == 0 = return exs
+  | null exs = return exs
   | otherwise = get >>= \bakSt ->
-      mapM (\e -> escapeAnalysis e >>= \e' -> get >>= \st -> put bakSt >> return (e',st)) exs >>= \tups ->
+      mapM (escapeAnalysis >=> \e' -> get >>= \st -> put bakSt >> return (e', st)) exs >>= \tups ->
           let exs' = map fst tups
               st' = foldr1 mergeStates (map snd tups)
           in put st' >> return exs'
@@ -138,9 +138,9 @@ setEscape var = get >>= \st ->
                                          else skipFalses var ps' vs' (tail infs)
                    in put (EscapeState (p:ps'') (v:vs'') infs)
   where setEscape' var (p:ps) (v:vs) = case (M.lookup var v, M.lookup var p) of
-          (Just _, _) -> (p:ps, (M.insert var True v):vs)
-          (_, Just _) -> ((M.insert var True p):ps, v:vs)
-          _ -> let (ps', vs') = setEscape' var ps vs in ((p:ps'), (v:vs'))
+          (Just _, _) -> (p:ps, M.insert var True v:vs)
+          (_, Just _) -> (M.insert var True p:ps, v:vs)
+          _ -> let (ps', vs') = setEscape' var ps vs in (p:ps', v:vs')
         setEscape' var ps vs = error $ "Failed to found " ++ var
         skipFalses var (p:ps) (v:vs) (i:is)
           | i = case M.lookup var p of

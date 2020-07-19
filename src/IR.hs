@@ -12,9 +12,9 @@ module IR (
 
 import Control.Monad.Trans.State
 import Data.Functor.Identity
-import Data.Maybe(fromJust)
+import Data.Maybe(fromMaybe, fromJust)
 import Data.List((\\), intercalate, delete)
-import Control.Monad(mapM, mapM_, replicateM, when, foldM)
+import Control.Monad((>=>), mapM, mapM_, replicateM, when, foldM, void)
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
 import qualified LibFuncs as LF
@@ -23,12 +23,12 @@ import qualified Absyn as A
 class Platform p where
     wordSize :: p -> Int
 
-newtype Temp = T { unTemp :: Int } deriving Eq
+newtype Temp = T { unTemp :: Int } deriving (Eq, Ord)
 
 instance Show Temp where
     show (T t) = "t" ++ show t
 
-newtype Label = L { unLabel :: Int } deriving Eq
+newtype Label = L { unLabel :: Int } deriving (Eq, Ord)
 
 instance Show Label where
     show (L l) = "l" ++ show l
@@ -53,7 +53,7 @@ data IR = Const Int
         | Call String [IR]
         | Ret (Maybe IR)
         | Phi [(IR, Label)]
-        deriving Eq
+        deriving (Eq, Ord)
 
 instance Show IR where
     show ir = case ir of
@@ -92,7 +92,7 @@ data BinOp = Add
            | Ge
            | Lt
            | Le
-           deriving Eq
+           deriving (Eq, Ord)
 
 instance Show BinOp where
     show op = case op of
@@ -138,7 +138,7 @@ type IRStateT a = StateT IRState Identity a
 runIRTranslation :: Platform p => p -> A.Expr -> IRState
 runIRTranslation p expr = runIdentity $ execStateT mainExpr (initIRState p)
   where mainExpr = transExpr expr >>
-                   modify (\st -> st{funDecs = FunDec "main" 0 [] (reverse $ (Ret Nothing:(head $ funBodies st))):funDecs st})
+                   modify (\st -> st{funDecs = FunDec "main" 0 [] (reverse $ Ret Nothing:head (funBodies st)):funDecs st})
 
 initIRState :: Platform p => p ->  IRState
 initIRState p = IRState { nextTemp = 0
@@ -170,26 +170,26 @@ newLabel = get >>= \st -> let nl = nextLabel st
                              return (L nl)
 
 getFRepl :: String -> IRStateT String
-getFRepl fn = get >>= return . maybe fn id . M.lookup fn . head . funcRepls
+getFRepl fn = fromMaybe fn . M.lookup fn . head . funcRepls <$> get
 
 getMTRepl :: String -> IRStateT (Maybe Temp)
-getMTRepl var = get >>= return . lookup . tempRepls
+getMTRepl var = lookup . tempRepls <$> get
   where lookup (r:reps) = case M.lookup var r of
             Nothing -> lookup reps
             tr -> tr
         lookup _ = Nothing
 
 getTRepl :: String -> IRStateT Temp
-getTRepl var = fmap fromJust $ getMTRepl var
+getTRepl var = fromJust <$> getMTRepl var
 
 getTInfo :: Temp -> IRStateT (Maybe TempInfo)
-getTInfo (T k) = get >>= return . IM.lookup k . tempInfos
+getTInfo (T k) = IM.lookup k . tempInfos <$> get
 
 getLastLabel :: IRStateT Label
-getLastLabel = get >>= return . fromJust . lastLabel
+getLastLabel = fromJust . lastLabel <$> get
 
 getWordSize :: IRStateT Int
-getWordSize = get >>= return . stWordSize
+getWordSize = stWordSize <$> get
 
 insertTRepl :: String -> Temp -> IRStateT ()
 insertTRepl v t = modify (\st -> let (r:reps) = tempRepls st in st{tempRepls = M.insert v t r:reps})
@@ -224,7 +224,7 @@ removeBreak :: IRStateT ()
 removeBreak = modify (\st -> st{breaks = tail $ breaks st})
 
 getBreak :: IRStateT Label
-getBreak = get >>= return . head . breaks
+getBreak = head . breaks <$> get
 
 incEscapes :: IRStateT ()
 incEscapes = modify (\st -> let (e:es) = escapeNums st in st{escapeNums = (e+1):es})
@@ -249,7 +249,7 @@ enterFunction fun args = mapM (const newTemp) args >>= \argTemps ->
                          | e = let (as', ts') = filtEsc as ts in (a:as', t:ts')
                          | otherwise = filtEsc as ts
                        filtEsc _ _ = ([],[])
-                       tempInfos' = foldr (\((T t), n) ti -> IM.insert t (Escaped curNesting' n) ti) (tempInfos st) $ zip escTemps [1..]
+                       tempInfos' = foldr (\(T t, n) ti -> IM.insert t (Escaped curNesting' n) ti) (tempInfos st) $ zip escTemps [1..]
                        prefixes' = fun:prefixes st
                        newName = intercalate "." prefixes'
                        curNesting' = curNesting st + 1
@@ -270,14 +270,14 @@ leaveFunction = modify (\st -> let (fun:prefixes') = prefixes st
                                    (body:funBodies') = funBodies st
                                    (a:as') = funArgs st
                                    (fr:funcRepls') = funcRepls st
-                                   frepl = maybe fun id (M.lookup fun fr)
+                                   frepl = fromMaybe fun $ M.lookup fun fr
                                    cnest = curNesting st
                                in st{ funcRepls = funcRepls'
                                     , tempRepls = tail $ tempRepls st
                                     , escapeNums = tail $ escapeNums st
                                     , funArgs = as'
                                     , funBodies = funBodies'
-                                    , funDecs = (FunDec frepl cnest a (reverse body)):funDecs st
+                                    , funDecs = FunDec frepl cnest a (reverse body):funDecs st
                                     , prefixes = prefixes'
                                     , curNesting = cnest - 1
                                     })
@@ -296,7 +296,7 @@ leaveLet = modify (\st -> st{ funcRepls = tail $ funcRepls st
                             })
 
 backupVar :: String -> IRStateT (Maybe Temp)
-backupVar v = get >>= return . M.lookup v . head . tempRepls
+backupVar v = M.lookup v . head . tempRepls <$> get
 
 restoreVar :: String -> Maybe Temp -> IRStateT ()
 restoreVar v mtr = modify (\st -> let (r:reps) = tempRepls st
@@ -354,15 +354,14 @@ transDec dec = case dec of
         assignExpr expr >>= \expr' ->
         newTemp >>= \t1 ->
         insertTRepl v t1 >>
-        case esc of
-            False -> insertIR (Assign t1 expr')
-            _ -> insertTInfo t1 >>
-                 case expr' of
-                     c@(Const _) -> insertIR (Store t1 c)
-                     l@(Label _) -> insertIR (Store t1 l)
-                     _ -> newTemp >>= \t2 ->
-                          insertIR (Assign t2 expr') >>
-                          insertIR (Store t1 (Temp t2))
+        if esc
+           then insertTInfo t1 >> case expr' of
+               c@(Const _) -> insertIR (Store t1 c)
+               l@(Label _) -> insertIR (Store t1 l)
+               _ -> newTemp >>= \t2 ->
+                    insertIR (Assign t2 expr') >>
+                    insertIR (Store t1 (Temp t2))
+           else insertIR (Assign t1 expr')
     A.FunDec _ (A.TypedFun fun args t expr) ->
         enterFunction fun args >>
         body >>
@@ -391,11 +390,11 @@ transExpr expr = case expr of
                              insertIR (Assign t1 expr') >>
                              insertIR (Store tr (Temp t1))
             _ -> case expr' of
-                     Const _ -> transLVal (\t -> Store t expr') lv >>= insertIR
+                     Const _ -> transLVal (`Store` expr') lv >>= insertIR
                      _ -> newTemp >>= \t1 ->
                           insertIR (Assign t1 expr') >>
                           transLVal (\t2 -> Store t2 (Temp t1)) lv >>= insertIR
-    A.If{} -> transIf transExpr expr >> return ()
+    A.If{} -> void $ transIf transExpr expr
     A.While _ cond expr ->
         seqAssVars [cond, expr] >>= \assVars ->
         let numVars = length assVars
@@ -410,7 +409,7 @@ transExpr expr = case expr of
            getGeneratedIR (transValuedExpr cond) >>= \(condir, cond') ->
            getGeneratedIR (insertIR (Label l3) >> transExpr expr) >>= \(exprir, _) ->
            getLastLabel >>= \ll ->
-           mapM_ (\(v, nt, ft) -> getTRepl v >>= \st -> insertIR (Assign nt $ Phi [((Temp ft), l1), ((Temp st), ll)])) (zip3 assVars temps treps) >>
+           mapM_ (\(v, nt, ft) -> getTRepl v >>= \st -> insertIR (Assign nt $ Phi [(Temp ft, l1), (Temp st, ll)])) (zip3 assVars temps treps) >>
            mapM_ insertIR (reverse condir) >>
            insertIR (CJump cond' l3 l4) >>
            mapM_ insertIR (reverse exprir) >>
@@ -440,7 +439,7 @@ transExpr expr = case expr of
            getGeneratedIR (cond to') >>= \(condir, cond') ->
            getGeneratedIR (insertIR (Label l3) >> transExpr expr >> incV) >>= \(exprir, _) ->
            getLastLabel >>= \ll ->
-           mapM_ (\(v, nt, ft) -> getTRepl v >>= \st -> insertIR (Assign nt $ Phi [((Temp ft), l1), ((Temp st), ll)])) (zip3 assVars temps treps) >>
+           mapM_ (\(v, nt, ft) -> getTRepl v >>= \st -> insertIR (Assign nt $ Phi [(Temp ft, l1), (Temp st, ll)])) (zip3 assVars temps treps) >>
            mapM_ insertIR (reverse condir) >>
            insertIR (CJump cond' l3 l4) >>
            mapM_ insertIR (reverse exprir) >>
@@ -494,7 +493,7 @@ assignExpr expr = case expr of
     A.Nil _ -> return (Const 0)
     A.Seq _ exs -> assignSeq exs
     A.IntLit _ i -> return (Const i)
-    A.StrLit _ s -> insertString s >>= return . initString . Label
+    A.StrLit _ s -> initString . Label <$> insertString s
     A.Neg _ expr -> transValuedExpr expr >>= \expr' -> return (Neg expr')
     A.Call _ fun args -> getFRepl fun >>= \frepl ->
         mapM transValuedExpr args >>= \args' ->
@@ -512,7 +511,7 @@ assignExpr expr = case expr of
         A.Le -> simpleBinOp e1 Le e2
         A.And -> assignBool expr
         A.Or -> assignBool expr
-      where simpleBinOp e1 irop e2 = BinOp <$> (transValuedExpr e1) <*> (return irop) <*> (transValuedExpr e2)
+      where simpleBinOp e1 irop e2 = BinOp <$> transValuedExpr e1 <*> return irop <*> transValuedExpr e2
             assignBool expr =
                 replicateM 3 newLabel >>= \[l1, l2, l3] ->
                 transBool expr l1 l2 >>
@@ -540,7 +539,7 @@ assignExpr expr = case expr of
         return (initRecord fs')
     A.Array _ _ e1 e2 -> transValuedExpr e1 >>= \e1' -> transValuedExpr e2 >>= \e2' ->
             return (initArray [e1', e2'])
-    A.If{} -> transIf transValuedExpr expr >>= return . Phi
+    A.If{} -> Phi <$> transIf transValuedExpr expr
     A.Let _ decs expr ->
         enterLet >>
         mapM_ transDec decs >>
@@ -622,7 +621,7 @@ transIf trans expr =
             getLastLabel >>= \ll ->
             insertIR (Jump l1) >>
             insertIR (Label l3) >>
-            mapM (\v -> getTRepl v >>= \tr -> return (Temp tr, ll)) assVars >>= \ph ->
+            mapM (getTRepl >=> \tr -> return (Temp tr, ll)) assVars >>= \ph ->
             let newPhis = phis' curPhis ph
             in modify (\st -> st{tempRepls = tempRepls bakSt}) >>
                case mel of
@@ -631,7 +630,7 @@ transIf trans expr =
         transIf' l1 expr assVars phis =
             trans expr >>= \expr' ->
             getLastLabel >>= \ll ->
-            mapM (\v -> getTRepl v >>= \tr -> return (Temp tr, ll)) assVars >>= \ph ->
+            mapM (getTRepl >=> \tr -> return (Temp tr, ll)) assVars >>= \ph ->
             let newPhis = phis' phis ph
             in insertIR (Jump l1) >>
                insertIR (Label l1) >>
@@ -639,7 +638,7 @@ transIf trans expr =
         phis' (p:ps) (i:is) = (i:p):phis' ps is
         phis' _ _ = []
         initPhis phis assVars
-          | null phis = getLastLabel >>= \initL -> mapM (\v -> getTRepl v >>= \tr -> return [(Temp tr, initL)]) assVars
+          | null phis = getLastLabel >>= \initL -> mapM (getTRepl >=> \tr -> return [(Temp tr, initL)]) assVars
           | otherwise = return phis
 
 getAssVars :: A.Expr -> IRStateT [String]
@@ -661,8 +660,7 @@ getAssVars expr = case expr of
         Nothing -> seqAssVars [cond, th]
         Just el -> seqAssVars [cond, th, el]
     A.While _ cond expr -> seqAssVars [cond, expr]
-    A.For _ v _ from to expr ->
-        seqAssVars [from, to, expr] >>= return . delete v
+    A.For _ v _ from to expr -> delete v <$> seqAssVars [from, to, expr]
     A.Let _ decs expr ->
         let (exs, vs) = decsExpr decs
         in seqAssVars (expr:exs) >>= \as ->
@@ -676,4 +674,4 @@ getAssVars expr = case expr of
         decsExpr _ = ([], [])
 
 seqAssVars :: [A.Expr] -> IRStateT [String]
-seqAssVars = foldM (\as e -> getAssVars e >>= return . foldl (\as a -> if elem a as then as else a:as) as) []
+seqAssVars = foldM (\as e -> foldl (\as a -> if elem a as then as else a:as) as <$> getAssVars e) []
