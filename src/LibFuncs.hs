@@ -1,10 +1,6 @@
 module LibFuncs (
     funTypes,
     sideEffectFuncs,
-    initArrayFunc,
-    initRecordFunc,
-    initStringFunc,
-    fatalErrorFunc,
     ) where
 
 import Absyn(Type(..))
@@ -27,19 +23,4 @@ sideEffectFuncs = [ "print"
                   , "flush"
                   , "getchar"
                   , "exit"
-                  , initArrayFunc
-                  , initRecordFunc
-                  , fatalErrorFunc
                   ]
-
-initArrayFunc :: String
-initArrayFunc = "initArray"
-
-initRecordFunc :: String
-initRecordFunc = "initRecord"
-
-initStringFunc :: String
-initStringFunc = "initString"
-
-fatalErrorFunc :: String
-fatalErrorFunc = "fatal"

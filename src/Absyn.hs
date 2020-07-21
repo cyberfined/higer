@@ -37,7 +37,7 @@ instance Show Type where
         TName s -> s
         TRecursive -> "recursive"
 
-data SourcePos = SourcePos String Int Int deriving (Eq, Show)
+data SourcePos = SourcePos String Int Int deriving (Eq, Ord, Show)
 
 class Posable p where
     position :: p -> SourcePos

@@ -5,6 +5,7 @@ module IR (
     FunDec(..),
     IR(..),
     BinOp(..),
+    RuntimeCall(..),
     TempInfo(..),
     IRState(..),
     runIRTranslation
@@ -17,6 +18,9 @@ import Data.List((\\), intercalate, delete)
 import Control.Monad((>=>), mapM, mapM_, replicateM, when, foldM, void)
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
+import Data.Ix(range)
+import Data.Array(bounds)
+import Data.Graph
 import qualified LibFuncs as LF
 import qualified Absyn as A
 
@@ -33,12 +37,17 @@ newtype Label = L { unLabel :: Int } deriving (Eq, Ord)
 instance Show Label where
     show (L l) = "l" ++ show l
 
-data FunDec = FunDec String Int [Temp] [IR] -- name level args body
+data FunDec = LFunDec String Int [Temp] [IR]                                 -- Linear func: name level args blocks
+            | CFunDec String Int [Temp] Graph (Vertex -> ([IR], Int, [Int])) -- CFG func: name level args CFG(graph, nodeFromKey)
 
 instance Show FunDec where
-    show (FunDec name nesting args body) = name ++ '(':sargs ++ ") [level " ++ show nesting ++ "] {\n" ++ sbody ++ "\n}"
-      where sargs = intercalate ", " (map show args)
-            sbody = intercalate "\n" (map show body)
+    show fd = case fd of
+        LFunDec name nesting args body -> wrap name nesting args (sbody body)
+        CFunDec name nesting args cfg nfk -> wrap name nesting args (sgraph nfk cfg)
+      where wrap name nesting args body = name ++ '(':sargs ++ ") [level " ++ show nesting ++ "] {\n" ++ body ++ "\n}"
+              where sargs = intercalate ", " (map show args)
+            sbody = intercalate "\n" . map show
+            sgraph nfk = intercalate "\n\n" . map (\i -> let (node,_,_) = nfk i in sbody node) . range . bounds
 
 data IR = Const Int
         | Temp Temp
@@ -50,6 +59,7 @@ data IR = Const Int
         | CJump IR Label Label
         | Load Temp
         | Store Temp IR
+        | RuntimeCall RuntimeCall
         | Call String [IR]
         | Ret (Maybe IR)
         | Phi [(IR, Label)]
@@ -67,6 +77,7 @@ instance Show IR where
         CJump cond l1 l2 -> "cjump " ++ show cond ++ ", iftrue " ++ show l1 ++ ", iffalse " ++ show l2
         Load t -> "load " ++ show t
         Store t v -> "store " ++ show t ++ ", " ++ show v
+        RuntimeCall rc -> show rc
         Call f args -> f ++ '(':showArgs args ++ ")"
         Ret mir -> maybe "ret" (\ir -> "ret " ++ show ir) mir
         Phi vals -> "phi " ++ intercalate ", " (map (\(ir,l) -> '[':show ir ++ ", " ++ show l ++ "]") vals)
@@ -112,6 +123,29 @@ instance Show BinOp where
         Lt -> "<"
         Le -> "<="
 
+data RuntimeCall = InitArray IR IR               -- size init
+                 | InitRecord [IR]               -- fields
+                 | InitString Label              -- label on which string data is placed
+                 | ArrLen Temp                   -- temp containing array address
+                 | ArrPtr Temp                   -- temp containing array address
+                 | RecPtr Temp                   -- temp containing record address
+                 | IsInBounds IR IR              -- size index
+                 | PanicBounds A.SourcePos IR IR -- position size index
+                 | Exit IR                       -- exit code
+                 deriving (Eq, Ord)
+
+instance Show RuntimeCall where
+    show rc = case rc of
+        InitArray sz ini -> "initArray(" ++ show sz ++ ", " ++ show ini ++ ")"
+        InitRecord args -> "initRecord(" ++ intercalate "," (map show args) ++ ")"
+        InitString l -> "initString(" ++ show l ++ ")"
+        ArrLen t -> "arrLen(" ++ show t ++ ")"
+        ArrPtr t -> "arrPtr(" ++ show t ++ ")"
+        RecPtr t -> "recPtr(" ++ show t ++ ")"
+        IsInBounds sz ind -> "isInBounds(" ++ show sz ++ ", " ++ show ind ++ ")"
+        PanicBounds _ sz ind -> "panicBounds(" ++ show sz ++ ", " ++ show ind ++ ")"
+        Exit code -> "exit(" ++ show code ++ ")"
+
 data TempInfo = Escaped Int Int -- level and number
               deriving (Eq, Show)
 
@@ -120,7 +154,7 @@ data IRState = IRState { nextTemp :: Int                    -- number of next te
                        , funcRepls :: [M.Map String String] -- old function name to new one
                        , tempRepls :: [M.Map String Temp]   -- temp replacements for variables
                        , tempInfos :: IM.IntMap TempInfo    -- information about temps
-                       , escapeNums :: [Int]                -- Count of escaping variables
+                       , escapeNums :: [Int]                -- count of escaping variables
                        , funArgs :: [[Temp]]                -- function arguments
                        , funBodies :: [[IR]]                -- functions bodies
                        , breaks :: [Label]                  -- labels for breaks
@@ -136,9 +170,40 @@ data IRState = IRState { nextTemp :: Int                    -- number of next te
 type IRStateT a = StateT IRState Identity a
 
 runIRTranslation :: Platform p => p -> A.Expr -> IRState
-runIRTranslation p expr = runIdentity $ execStateT mainExpr (initIRState p)
-  where mainExpr = transExpr expr >>
-                   modify (\st -> st{funDecs = FunDec "main" 0 [] (reverse $ Ret Nothing:head (funBodies st)):funDecs st})
+runIRTranslation p expr = st{funDecs = map buildCFG $ funDecs st}
+  where st = runIdentity $ execStateT mainExpr (initIRState p)
+        mainExpr = transExpr expr >>
+                   modify (\st -> st{funDecs = LFunDec "main" 0 [] (reverse $ Ret Nothing:head (funBodies st)):funDecs st})
+
+buildCFG :: FunDec -> FunDec
+buildCFG (LFunDec fun nesting args body) = CFunDec fun nesting args graph nfk
+  where (graph, nfk, _) = graphFromEdges (sStage blockLabels bs curBlock (initNeighs bs curBlock) [] [])
+        initNeighs bs curBlock = case bs of
+            ((ir:irs):bs) -> case ir of
+                Jump _ -> []
+                CJump{} -> []
+                RuntimeCall (Exit _) -> []
+                Ret _ -> []
+                _ -> [curBlock-1]
+        (blockLabels, bs, curBlock) = fStage IM.empty [[]] 0 body
+        fStage blockLabels (b:bs) curBlock (ir:irs) = case ir of
+            Label (L i) -> let (bs', curBlock') = case b of
+                                                      [] -> ([ir]:bs, curBlock)
+                                                      _ -> ([ir]:b:bs, curBlock+1)
+                           in fStage (IM.insert i curBlock' blockLabels) bs' curBlock' irs
+            Jump _ -> next
+            CJump{} -> next
+            RuntimeCall (Exit _) -> next
+            _ -> fStage blockLabels ((ir:b):bs) curBlock irs
+          where next = fStage blockLabels ([]:(ir:b):bs) (curBlock+1) irs
+        fStage blockLabels bs curBlock _ = (blockLabels, bs, curBlock)
+        sStage blockLabels ((ir:irs):bs) curBlock neighs node nodes = case ir of
+            Jump (L i) -> sStage blockLabels (irs:bs) curBlock (neighs' neighs [i]) (ir:node) nodes
+            CJump _ (L i1) (L i2) -> sStage blockLabels (irs:bs) curBlock (neighs' neighs [i1,i2]) (ir:node) nodes
+            _ -> sStage blockLabels (irs:bs) curBlock neighs (ir:node) nodes
+          where neighs' = foldr (\i a -> fromJust (IM.lookup i blockLabels):a)
+        sStage blockLabels (_:bs) curBlock neighs node nodes = sStage blockLabels bs (curBlock-1) (initNeighs bs (curBlock-1)) [] ((node, curBlock, neighs):nodes)
+        sStage blockLabels _ _ _ _ nodes = nodes
 
 initIRState :: Platform p => p ->  IRState
 initIRState p = IRState { nextTemp = 0
@@ -165,9 +230,7 @@ newTemp = get >>= \st -> let nt = nextTemp st
                             return (T nt)
 
 newLabel :: IRStateT Label
-newLabel = get >>= \st -> let nl = nextLabel st
-                          in put (st{nextLabel = nl+1}) >>
-                             return (L nl)
+newLabel = get >>= \st -> let nl = nextLabel st in put(st{nextLabel = nl+1}) >> return (L nl)
 
 getFRepl :: String -> IRStateT String
 getFRepl fn = fromMaybe fn . M.lookup fn . head . funcRepls <$> get
@@ -277,7 +340,7 @@ leaveFunction = modify (\st -> let (fun:prefixes') = prefixes st
                                     , escapeNums = tail $ escapeNums st
                                     , funArgs = as'
                                     , funBodies = funBodies'
-                                    , funDecs = FunDec frepl cnest a (reverse body):funDecs st
+                                    , funDecs = LFunDec frepl cnest a (reverse body):funDecs st
                                     , prefixes = prefixes'
                                     , curNesting = cnest - 1
                                     })
@@ -314,39 +377,6 @@ getGeneratedIR expr =
     in put (st{funBodies = rest}) >>
        return (irs, res)
 
-{-
-   Offset constant is the number of field in structure.
-   For example:
-   struct st1 {
-       int a;   // offset constant for a is 0
-       int b;   // offset constant for b is 1
-   };
-
-   These constants are used to load values from arrays and records.
-   All offset constants must be set after implementation of the runtime.
-   Now all values are dummies.
--}
-recordFieldsOffset :: Int
-recordFieldsOffset = 1
-
-arrayDataOffset :: Int
-arrayDataOffset = 1
-
-arraySizeOffset :: Int
-arraySizeOffset = 2
-
-initString :: IR -> IR
-initString s = Call LF.initStringFunc [s]
-
-initRecord :: [IR] -> IR
-initRecord = Call LF.initRecordFunc
-
-initArray :: [IR] -> IR
-initArray = Call LF.initArrayFunc
-
-fatalError :: IR -> IR
-fatalError arg = Call LF.fatalErrorFunc [arg]
-
 transDec :: A.Dec -> IRStateT ()
 transDec dec = case dec of
     A.TypeDec{} -> return ()
@@ -355,7 +385,7 @@ transDec dec = case dec of
         newTemp >>= \t1 ->
         insertTRepl v t1 >>
         if esc
-           then insertTInfo t1 >> case expr' of
+           then insertTInfo t1 >> incEscapes >> case expr' of
                c@(Const _) -> insertIR (Store t1 c)
                l@(Label _) -> insertIR (Store t1 l)
                _ -> newTemp >>= \t2 ->
@@ -377,7 +407,7 @@ transExpr expr = case expr of
     A.Call _ fun args -> getFRepl fun >>= \frepl ->
         mapM transValuedExpr args >>= \args' ->
             insertIR (Call frepl args')
-    A.Assign _ lv expr -> assignExpr expr >>= \expr' ->
+    A.Assign sc lv expr -> assignExpr expr >>= \expr' ->
         case lv of
             A.LId v -> getTRepl v >>= \tr ->
                 getTInfo tr >>= \mti -> case mti of
@@ -390,10 +420,10 @@ transExpr expr = case expr of
                              insertIR (Assign t1 expr') >>
                              insertIR (Store tr (Temp t1))
             _ -> case expr' of
-                     Const _ -> transLVal (`Store` expr') lv >>= insertIR
+                     Const _ -> transLVal sc (`Store` expr') lv >>= insertIR
                      _ -> newTemp >>= \t1 ->
                           insertIR (Assign t1 expr') >>
-                          transLVal (\t2 -> Store t2 (Temp t1)) lv >>= insertIR
+                          transLVal sc (\t2 -> Store t2 (Temp t1)) lv >>= insertIR
     A.If{} -> void $ transIf transExpr expr
     A.While _ cond expr ->
         seqAssVars [cond, expr] >>= \assVars ->
@@ -489,11 +519,11 @@ transValuedExpr e = assignExpr e >>= \e' -> case e' of
 
 assignExpr :: A.Expr -> IRStateT IR
 assignExpr expr = case expr of
-    A.LVal _ lv -> transLVal Load lv
+    A.LVal sc lv -> transLVal sc Load lv
     A.Nil _ -> return (Const 0)
     A.Seq _ exs -> assignSeq exs
     A.IntLit _ i -> return (Const i)
-    A.StrLit _ s -> initString . Label <$> insertString s
+    A.StrLit _ s -> RuntimeCall . InitString <$> insertString s
     A.Neg _ expr -> transValuedExpr expr >>= \expr' -> return (Neg expr')
     A.Call _ fun args -> getFRepl fun >>= \frepl ->
         mapM transValuedExpr args >>= \args' ->
@@ -536,9 +566,9 @@ assignExpr expr = case expr of
             restBool expr l1 l2 = transValuedExpr expr >>= \expr' ->
                                   insertIR (CJump expr' l1 l2)
     A.Record _ _ fs -> mapM (transValuedExpr . snd) fs >>= \fs' ->
-        return (initRecord fs')
+        return (RuntimeCall $ InitRecord fs')
     A.Array _ _ e1 e2 -> transValuedExpr e1 >>= \e1' -> transValuedExpr e2 >>= \e2' ->
-            return (initArray [e1', e2'])
+            return (RuntimeCall $ InitArray e1' e2')
     A.If{} -> Phi <$> transIf transValuedExpr expr
     A.Let _ decs expr ->
         enterLet >>
@@ -549,64 +579,50 @@ assignExpr expr = case expr of
   where assignSeq (e:es@(_:_)) = transExpr e >> assignSeq es
         assignSeq [e] = assignExpr e
 
-transLVal :: (Temp -> IR) -> A.LVal -> IRStateT IR
-transLVal stload lv = case lv of
+transLVal :: A.SourcePos -> (Temp -> IR) -> A.LVal -> IRStateT IR
+transLVal sc stload lv = case lv of
     A.LId v -> getTRepl v >>= \tr ->
         getTInfo tr >>= \mti -> case mti of
             Nothing -> return (Temp tr)
             Just _ -> return (stload tr)
-    A.LDot lv _ off -> transLVal Load lv >>= \res -> case res of
-        t1@(Temp _) -> fromTemp t1
+    A.LDot lv _ off -> transLVal sc Load lv >>= \res -> case res of
+        Temp t1 -> fromTemp t1
         ld -> newTemp >>= \t1 ->
               insertIR (Assign t1 ld) >>
-              fromTemp (Temp t1)
+              fromTemp t1
       where fromTemp t1 =
-                replicateM 3 newTemp >>= \[t2, t3, t4] ->
+                replicateM 2 newTemp >>= \[t2, t3] ->
                 getWordSize >>= \ws ->
-                insertIR (Assign t2 $ BinOp t1 Add (Const $ recordFieldsOffset*ws)) >>
-                insertIR (Assign t3 $ Load t2) >>
-                insertIR (Assign t4 $ BinOp (Temp t3) Add (Const $ off*ws)) >>
-                return (stload t4)
-    A.LArr lv expr -> transLVal Load lv >>= \res -> case res of
-        t1@(Temp _) -> fromTemp t1
+                insertIR (Assign t2 (RuntimeCall $ RecPtr t1)) >>
+                insertIR (Assign t3 $ BinOp (Temp t2) Add (Const $ off*ws)) >>
+                return (stload t3)
+    A.LArr lv expr -> transLVal sc Load lv >>= \res -> case res of
+        Temp t1 -> fromTemp t1
         ld -> newTemp >>= \t1 ->
               insertIR (Assign t1 ld) >>
-              fromTemp (Temp t1)
+              fromTemp t1
       where fromTemp t1 =
-                replicateM 10 newTemp >>= \[t2, t3, t4, t5, t6, t7, t8, t9, t10, t11] ->
-                replicateM 4 newLabel >>= \[l1, l2, l3, l4] ->
+                replicateM 6 newTemp >>= \[t2, t3, t4, t5, t6, t7] ->
+                replicateM 2 newLabel >>= \[l1, l2] ->
                 getWordSize >>= \ws ->
-                fmap Label (insertString negError) >>= \negMsgLabel ->
-                fmap Label (insertString tooBigError) >>= \tooBigMsgLabel ->
                 transValuedExpr expr >>= \ind ->
-                insertIR (Assign t2 $ BinOp t1 Add (Const $ arraySizeOffset*ws)) >>
-                insertIR (Assign t3 $ Load t2) >>
-                insertIR (Assign t4 $ BinOp ind Lt (Const 0)) >>
-                insertIR (CJump (Temp t4) l1 l2) >>
-                insertIR (Label l1) >>
-                insertIR (Assign t5 $ initString negMsgLabel) >>
-                insertIR (fatalError $ Temp t5) >>
+                insertIR (Assign t2 (RuntimeCall $ ArrLen t1)) >>
+                insertIR (Assign t3 (RuntimeCall $ IsInBounds (Temp t2) ind)) >>
+                insertIR (CJump (Temp t3) l1 l2) >>
                 insertIR (Label l2) >>
-                insertIR (Assign t6 $ BinOp ind Gt (Temp t3)) >>
-                insertIR (CJump (Temp t6) l3 l4) >>
-                insertIR (Label l3) >>
-                insertIR (Assign t7 $ initString tooBigMsgLabel) >>
-                insertIR (fatalError $ Temp t7) >>
-                insertIR (Label l4) >>
-                insertIR (Assign t8 $ BinOp ind Mul (Const ws)) >>
-                insertIR (Assign t9 $ BinOp t1 Add (Const $ arrayDataOffset*ws)) >>
-                insertIR (Assign t10 $ Load t9) >>
-                insertIR (Assign t11 $ BinOp (Temp t10) Add (Temp t8)) >>
-                return (stload t11)
-            negError = "Array index must be greater than or equal to 0"
-            tooBigError = "Array index is too big"
+                insertIR (Assign t4 (RuntimeCall $ PanicBounds sc (Temp t2) ind)) >>
+                insertIR (RuntimeCall $ Exit (Temp t4)) >>
+                insertIR (Label l1) >>
+                insertIR (Assign t5 (RuntimeCall $ ArrPtr t1)) >>
+                insertIR (Assign t6 $ BinOp ind Mul (Const ws)) >>
+                insertIR (Assign t7 $ BinOp (Temp t5) Add (Temp t6)) >>
+                return (stload t7)
 
 transIf :: (A.Expr -> IRStateT a) -> A.Expr -> IRStateT [(a, Label)]
 transIf trans expr =
-    replicateM 2 newLabel >>= \[l1, l2] ->
+    newLabel >>= \l1 ->
     getAssVars expr >>= \assVars ->
-    insertIR (Label l1) >>
-    transIf' l2 expr assVars [] >>= \(phis, as) ->
+    transIf' l1 expr assVars [] >>= \(phis, as) ->
     mapM_ (\(v,ph) -> newTemp >>= \t1 -> insertIR (Assign t1 $ Phi ph) >> updateTRepl v t1) (zip assVars phis) >>
     return as
   where transIf' l1 (A.If _ cond th mel) assVars phis =
