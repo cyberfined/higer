@@ -13,9 +13,9 @@ module IR (
 
 import Control.Monad.Trans.State
 import Data.Functor.Identity
-import Data.Maybe(fromMaybe, fromJust)
+import Data.Maybe(fromMaybe, fromJust, isJust)
 import Data.List((\\), intercalate, delete)
-import Control.Monad((>=>), mapM, mapM_, replicateM, when, foldM, void)
+import Control.Monad((>=>), mapM, mapM_, replicateM, when, unless, foldM, void)
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
 import Data.Ix(range)
@@ -247,6 +247,9 @@ getTRepl var = fromJust <$> getMTRepl var
 
 getTInfo :: Temp -> IRStateT (Maybe TempInfo)
 getTInfo (T k) = IM.lookup k . tempInfos <$> get
+
+hasLastLabel :: IRStateT Bool
+hasLastLabel = isJust . lastLabel <$> get
 
 getLastLabel :: IRStateT Label
 getLastLabel = fromJust . lastLabel <$> get
@@ -621,6 +624,8 @@ transLVal sc stload lv = case lv of
 transIf :: (A.Expr -> IRStateT a) -> A.Expr -> IRStateT [(a, Label)]
 transIf trans expr =
     newLabel >>= \l1 ->
+    hasLastLabel >>= \hll ->
+    unless hll (newLabel >>= \l2 -> insertIR $ Label l2) >>
     getAssVars expr >>= \assVars ->
     transIf' l1 expr assVars [] >>= \(phis, as) ->
     mapM_ (\(v,ph) -> newTemp >>= \t1 -> insertIR (Assign t1 $ Phi ph) >> updateTRepl v t1) (zip assVars phis) >>
