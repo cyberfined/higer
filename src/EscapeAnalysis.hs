@@ -141,7 +141,7 @@ setEscape var = get >>= \st ->
           (Just _, _) -> (p:ps, M.insert var True v:vs)
           (_, Just _) -> (M.insert var True p:ps, v:vs)
           _ -> let (ps', vs') = setEscape' var ps vs in (p:ps', v:vs')
-        setEscape' var ps vs = error $ "Failed to found " ++ var
+        setEscape' var ps vs = (ps, vs)
         skipFalses var (p:ps) (v:vs) (i:is)
           | i = case M.lookup var p of
               Nothing -> let (ps', vs') = setEscape' var ps vs in (p:ps', v:vs')
