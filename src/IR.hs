@@ -20,8 +20,6 @@ import qualified Data.IntMap as IM
 import qualified Data.IntSet as IS
 import qualified Data.Set as S
 import qualified Data.Map as M
-import Data.Ix(range)
-import Data.Array((!), bounds)
 import Data.Graph
 import qualified LibFuncs as LF
 import qualified Absyn as A
@@ -49,18 +47,18 @@ data FunDec = LFunDec { name :: String
                       , args :: [Temp]
                       , cfg :: Graph
                       , dtree :: Graph
-                      , nfk :: Vertex -> ([IR], [Vertex])
+                      , nodes :: Nodes [IR]
                       , blockLabels :: IM.IntMap Int
                       }
 
 instance Show FunDec where
     show fd = case fd of
         LFunDec name nesting args body -> wrap name nesting args (sbody body)
-        CFunDec name nesting args cfg _ nfk _ -> wrap name nesting args (sgraph nfk cfg)
+        CFunDec name nesting args cfg _ nodes _ -> wrap name nesting args (sgraph nodes cfg)
       where wrap name nesting args body = name ++ '(':sargs ++ ") [level " ++ show nesting ++ "] {\n" ++ body ++ "\n}"
               where sargs = intercalate ", " (map show args)
             sbody = intercalate "\n" . map show
-            sgraph nfk = intercalate "\n\n" . map (\i -> let (node,_) = nfk i in sbody node) . range . bounds
+            sgraph nodes = intercalate "\n\n" . map (sbody . node nodes) . vertices
 
 data IR = Const Int
         | Temp Temp
@@ -190,15 +188,14 @@ runIRTranslation p expr = st{funDecs = map buildCFG $ funDecs st}
                    modify (\st -> st{funDecs = LFunDec "main" 0 [] (reverse $ Ret Nothing:head (funBodies st)):funDecs st})
 
 buildCFG :: FunDec -> FunDec
-buildCFG (LFunDec fun nesting args body) = CFunDec fun nesting args graph (domTree graph 0) ((\(x,_,z) -> (x,z)) . nfk) blockLabels
-  where (graph, nfk, _) = graphFromEdges (sStage blockLabels bs curBlock (initNeighs bs curBlock) [] [])
-        initNeighs bs curBlock = case bs of
-            ((ir:irs):bs) -> case ir of
-                Jump _ -> []
-                CJump{} -> []
-                RuntimeCall (Exit _) -> []
-                Ret _ -> []
-                _ -> [curBlock-1]
+buildCFG (LFunDec fun nesting args body) = CFunDec fun nesting args graph (domTree graph 0) nodes blockLabels
+  where (graph, nodes, _) = fromEdges $ sStage blockLabels bs curBlock (initNeighs bs curBlock) [] []
+        initNeighs ((ir:irs):bs) curBlock = case ir of
+            Jump _ -> []
+            CJump{} -> []
+            RuntimeCall (Exit _) -> []
+            Ret _ -> []
+            _ -> [curBlock]
         (blockLabels, bs, curBlock) = fStage IM.empty [[]] 0 body
         fStage blockLabels (b:bs) curBlock (ir:irs) = case ir of
             Label (L i) -> let (bs', curBlock') = case b of
@@ -216,26 +213,8 @@ buildCFG (LFunDec fun nesting args body) = CFunDec fun nesting args graph (domTr
             CJump _ (L i1) (L i2) -> sStage blockLabels (irs:bs) curBlock (neighs' neighs [i1,i2]) (ir:node) nodes
             _ -> sStage blockLabels (irs:bs) curBlock neighs (ir:node) nodes
           where neighs' = foldr (\i a -> fromJust (IM.lookup i blockLabels):a)
-        sStage blockLabels (_:bs) curBlock neighs node nodes = sStage blockLabels bs (curBlock-1) (initNeighs bs (curBlock-1)) [] ((node, curBlock, neighs):nodes)
+        sStage blockLabels (_:bs) curBlock neighs node nodes = sStage blockLabels bs (curBlock-1) (initNeighs bs curBlock) [] ((node, curBlock, neighs):nodes)
         sStage blockLabels _ _ _ _ nodes = nodes
-
-domTree :: Graph -> Vertex -> Graph
-domTree gr root = buildG (bounds gr) . fst . domTree' [] IS.empty . head $ dfs gr [root]
-  where allVerts = IS.fromList $ vertices gr
-        domTree' edges edged (Node v ns) = IS.foldl insEdge (edges',edged') doms
-          where (edges', edged') = foldl (\(es,ed) n -> domTree' es ed n) (edges,edged) ns
-                doms = IS.delete v $ IS.difference allVerts $ reachableAvoid gr root v
-                insEdge (es, ed) w
-                  | IS.member w ed = (es, ed)
-                  | otherwise = ((v,w):es, IS.insert w ed)
-
-reachableAvoid :: Graph -> Vertex -> Vertex -> IS.IntSet
-reachableAvoid gr root avoid
-  | root == avoid = IS.empty
-  | otherwise = reachableAvoid' gr root avoid (IS.singleton root)
-  where reachableAvoid' gr root avoid visited = foldl (\vs n -> reachableAvoid' gr n avoid vs) visited' neighs
-          where neighs = filter (\n -> n /= avoid && IS.notMember n visited) (gr ! root)
-                visited' = foldl (flip IS.insert) visited neighs
 
 initIRState :: Platform p => p ->  IRState
 initIRState p = IRState { nextTemp = 0
