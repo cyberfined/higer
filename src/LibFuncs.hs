@@ -1,6 +1,7 @@
 module LibFuncs (
     funTypes,
     sideEffectFuncs,
+    pureFuncs
     ) where
 
 import Absyn(Type(..))
@@ -24,3 +25,12 @@ sideEffectFuncs = [ "print"
                   , "getchar"
                   , "exit"
                   ]
+
+pureFuncs :: [String]
+pureFuncs = [ "ord"
+            , "chr"
+            , "size"
+            , "substring"
+            , "concat"
+            , "not"
+            ]
