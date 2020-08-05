@@ -10,4 +10,5 @@ Tiger compiler written in haskell
 - [x] Escape analysis
 - [x] SSA generation
 - [ ] SSA optimizations
+    - [x] Subexpression elimination
 - [ ] Assembly language code generation

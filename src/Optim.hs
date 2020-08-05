@@ -8,4 +8,4 @@ import Control.Monad((>=>), mapM, foldM)
 import IR
 
 runOptim :: IRState -> Either String IRState
-runOptim = return . runSideEffectAnalysis
+runOptim = subExprElim . runSideEffectAnalysis

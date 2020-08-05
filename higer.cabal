@@ -17,7 +17,7 @@ executable higer
   hs-source-dirs:      src
   main-is:             Main.hs
   other-modules:       Lex, Absyn, Parser, TypeCheck, EscapeAnalysis, IR, LibFuncs,
-                       Optim.SideEffectAnalysis, Optim,
+                       Optim.SideEffectAnalysis, Optim.Subexpr, Optim,
                        Data.Graph
   default-language:    Haskell2010
   build-tool-depends:  alex:alex >= 3.2 && < 4
