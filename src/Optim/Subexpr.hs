@@ -17,10 +17,10 @@ import Data.Foldable(find)
 import IR hiding(strings, sideEffectFuncs)
 import qualified IR
 
-data ConstValue = IntConst Int     -- t = 10
-                | TempAlias Temp   -- t1 = t2
-                | StrConst String  -- t = InitString(label) or function of string literals
-                | ArrConstSize Int -- t = InitArray(constSize, initValue)
+data ConstValue = IntConst Int       -- t = 10
+                | TempAlias Temp     -- t1 = t2
+                | StrLit String      -- t = InitString(label) or function of string literals
+                | ArrSize ConstValue -- t = InitArray(constSize/temp, initValue)
 
 data OptState = OptState { constTemps :: IM.IntMap ConstValue -- temp to constant value
                          , exprTemps :: [M.Map IR Temp]       -- expression to temp
@@ -47,8 +47,11 @@ insertConst (T t) ir = modify (\st -> st{constTemps = IM.insert t (cv st) $ cons
   where cv st = case ir of
             Const i -> IntConst i
             Temp t -> TempAlias t
-            RuntimeCall (InitString l) -> StrConst $ fst $ fromJust $ find ((== l) . snd) $ M.assocs (strings st)
-            RuntimeCall (InitArray (Const s) _) -> ArrConstSize s
+            RuntimeCall rc -> case rc of
+                InitString l -> StrLit $ fst $ fromJust $ find ((== l) . snd) $ M.assocs (strings st)
+                InitArray sz _ -> case sz of
+                    Const sz -> ArrSize (IntConst sz)
+                    Temp sz -> ArrSize (TempAlias sz)
 
 insertExpr :: IR -> Temp -> OptStateT ()
 insertExpr k v = modify (\st -> let (ex:es) = exprTemps st
@@ -64,9 +67,11 @@ getConstIR t = (=<<) cnv <$> getConstValue t
             TempAlias t -> return $ Temp t
             _ -> Nothing
 
-getConstArrLen :: Temp -> OptStateT (Maybe IR)
-getConstArrLen t = getConstValue t >>= \mcv -> case mcv of
-    Just (ArrConstSize i) -> return $ return $ Const i
+getArrLen :: Temp -> OptStateT (Maybe IR)
+getArrLen t = getConstValue t >>= \mcv -> case mcv of
+    Just (ArrSize sz) -> case sz of
+        IntConst sz -> return (return $ Const sz)
+        TempAlias sz -> return (return $ Temp sz)
     _ -> return Nothing
 
 getExpr :: IR -> OptStateT (Maybe Temp)
@@ -115,7 +120,7 @@ optStmt (Assign t e) = optIR e >>= \e' -> case e' of
     Neg _ -> assignLookup t e'
     Load _ -> return (Assign t e')
     RuntimeCall rc -> case rc of
-        InitArray (Const _) _ -> insertConst t e' >> return (Assign t e')
+        InitArray{} -> insertConst t e' >> return (Assign t e')
         InitString{} -> insertConst t e' >> return (Assign t e')
         ArrLen _ -> assignLookup t e'
         ArrPtr _ -> assignLookup t e'
@@ -157,7 +162,7 @@ optIR ir = case ir of
         InitRecord es -> RuntimeCall . InitRecord <$> mapM optIR es
         is@(InitString _) -> return $ RuntimeCall is
         ArrLen t -> optIR (Temp t) >>= \(Temp t') ->
-                    fromMaybe (RuntimeCall $ ArrLen t') <$> getConstArrLen t'
+                    fromMaybe (RuntimeCall $ ArrLen t') <$> getArrLen t'
         ArrPtr t -> optIR (Temp t) >>= \(Temp t') -> return (RuntimeCall $ ArrPtr t')
         RecPtr t -> optIR (Temp t) >>= \(Temp t') -> return (RuntimeCall $ RecPtr t')
         IsInBounds e1 e2 ->
