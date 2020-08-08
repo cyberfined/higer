@@ -6,6 +6,10 @@ module Data.Graph (
     Edge,
     buildG,
     fromEdges,
+    transpose,
+    bounds,
+    deleteEdge,
+    commonDescendant,
     neighs,
     node,
     updateNode,
@@ -16,8 +20,9 @@ module Data.Graph (
     Tree(..)
     ) where
 
-import Data.Array
-import Data.List(sortBy)
+import Data.Array hiding (bounds)
+import qualified Data.Array as A
+import Data.List(intersect, delete, sortBy)
 import Data.Maybe(mapMaybe)
 import Data.Foldable(foldr', foldl', toList)
 
@@ -29,7 +34,7 @@ instance Show Graph where
 newtype Nodes a = Nodes { unNodes :: Array Vertex a } deriving (Eq, Ord)
 
 instance Show a => Show (Nodes a) where
-    show = show . assocs. unNodes
+    show = show . assocs . unNodes
 
 instance Functor Nodes where
     fmap f = Nodes . fmap f . unNodes
@@ -66,6 +71,20 @@ fromEdges edges = (graph, nodes, keyMap)
                   where midKey = keyArr ! mid
                         mid = a + (b-a) `div` 2
 
+transpose :: Graph -> Graph
+transpose (Graph gr) = buildG (A.bounds gr) [(w,v) | v <- indices gr, w <- gr!v]
+
+bounds :: Graph -> (Vertex, Vertex)
+bounds = A.bounds . unGraph
+
+deleteEdge :: Graph -> Edge -> Graph
+deleteEdge (Graph gr) (v1,v2) = Graph $ gr // [(v1, delete v2 (gr ! v1))]
+
+commonDescendant :: Graph -> Vertex -> Vertex -> Maybe Vertex
+commonDescendant gr v1 v2 = case tail (reachable gr v1) `intersect` tail (reachable gr v2) of
+    (x:_) -> Just x
+    _ -> Nothing
+
 neighs :: Graph -> Vertex -> [Vertex]
 neighs gr v = unGraph gr ! v
 
@@ -79,9 +98,9 @@ vertices :: Graph -> [Vertex]
 vertices = indices . unGraph
 
 dfs :: Graph -> Vertex -> Tree Vertex
-dfs (Graph gr) = fst . dfs' (array (bounds gr) initVisited)
-  where initVisited = (0,True):zip [1..] (replicate maxInd False)
-        maxInd = snd $ bounds gr
+dfs (Graph gr) root = fst $ dfs' (array (A.bounds gr) initVisited) root
+  where initVisited = map (\i -> if i == root then (i,True) else (i,False)) [0..maxInd]
+        maxInd = snd $ A.bounds gr
         dfs' visited v = (Branch v rest, visited'')
           where (rest, visited'') = deep visited' neighs
                 deep visited (n:ns) =
@@ -93,7 +112,7 @@ dfs (Graph gr) = fst . dfs' (array (bounds gr) initVisited)
                 neighs = filter (\i -> not $ visited ! i) (gr ! v)
 
 domTree :: Graph -> Vertex -> Graph
-domTree gr@(Graph arr) root = buildG (bounds arr) $ fst $ domTree' (dfs gr root) [] initEdged
+domTree gr@(Graph arr) root = buildG (A.bounds arr) $ fst $ domTree' (dfs gr root) [] initEdged
   where domTree' (Branch v rest) edges edged = (edges'', edged' // deltaEdged)
           where (edges'', deltaEdged) = foldl' insEdge (edges', []) doms
                 (edges',edged') = foldl' (\(es,ed) t -> domTree' t es ed) (edges,edged) rest
@@ -101,8 +120,8 @@ domTree gr@(Graph arr) root = buildG (bounds arr) $ fst $ domTree' (dfs gr root)
                 insEdge (es, delta) w
                   | edged' ! w = (es, delta)
                   | otherwise = ((v,w):es, (w,True):delta)
-        initEdged = array (bounds arr) (zip [0..] $ replicate arrLen False)
-        arrLen = snd (bounds arr) + 1
+        initEdged = array (A.bounds arr) (zip [0..] $ replicate arrLen False)
+        arrLen = snd (A.bounds arr) + 1
 
 reachableAvoid :: Graph -> Vertex -> Vertex -> Array Vertex Bool
 reachableAvoid (Graph gr) root avoid
@@ -111,8 +130,8 @@ reachableAvoid (Graph gr) root avoid
   where reachableAvoid' visited root = foldl' reachableAvoid' visited' neighs
           where neighs = filter (\v -> v /= avoid && not (visited ! v)) (gr ! root)
                 visited' = visited // map (\n -> (n,True)) neighs
-        initVisited = array (bounds gr) $ map (\v -> (v, v == root || v == avoid)) [0..maxInd]
-        maxInd = snd $ bounds gr
+        initVisited = array (A.bounds gr) $ map (\v -> (v, v == root || v == avoid)) [0..maxInd]
+        maxInd = snd $ A.bounds gr
 
 reachable :: Graph -> Vertex -> [Vertex]
 reachable gr = toList . dfs gr
