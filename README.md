@@ -7,8 +7,7 @@ Tiger compiler written in haskell
 - [x] Lexer
 - [x] Parser
 - [x] Type checker
-- [x] Escape analysis
-- [x] SSA generation
-- [ ] SSA optimizations
-    - [x] Subexpression elimination
+- [ ] Escape analysis
+- [ ] IR generation
+- [ ] IR optimizations
 - [ ] Assembly language code generation
