@@ -1,10 +1,11 @@
 import Test.HUnit
 import qualified ParserTests
 import qualified TypeCheckerTests
-import Control.Monad(void)
+import qualified EscapeAnalysisTests
 
 main :: IO ()
-main = void $ runTestTT $ TestList
+main = runTestTTAndExit $ TestList
     [ ParserTests.tests
     , TypeCheckerTests.tests
+    , EscapeAnalysisTests.tests
     ]
