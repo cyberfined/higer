@@ -26,6 +26,7 @@ library
     , Tiger.Parser
     , Tiger.Expr
     , Tiger.TypeCheck
+    , Tiger.EscapeAnalysis
   other-modules:
       Tiger.Expr.Types
     , Tiger.Expr.Annotated
@@ -63,6 +64,7 @@ test-suite higer-test
   other-modules:
       ParserTests
     , TypeCheckerTests
+    , EscapeAnalysisTests
     , Common
   hs-source-dirs:
       tests
