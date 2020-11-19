@@ -18,8 +18,7 @@ module Tiger.Expr.Types
   , showExpr
   , showBinop
   , showTypeRVal
-  )
-where
+  ) where
 
 import Data.Text hiding(map, head, null, foldr, zipWith, length)
 import qualified Data.Text as T

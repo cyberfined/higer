@@ -1,4 +1,26 @@
-module Tiger.Expr.Shorthands where
+module Tiger.Expr.Shorthands
+    ( mkIntLit
+    , mkStrLit
+    , mkNil
+    , mkLVal
+    , mkDot
+    , mkIndex
+    , mkNeg
+    , mkBinop
+    , mkRecord
+    , mkArray
+    , mkCall
+    , mkAssign
+    , mkIf
+    , mkWhile
+    , mkFor
+    , mkBreak
+    , mkLet
+    , mkSeq
+    , ($+), ($-), ($*), ($/)
+    , ($<), ($<=), ($>), ($>=)
+    , ($==), ($!=), ($&&), ($||)
+    ) where
 
 import Data.Text
 import Data.Fix

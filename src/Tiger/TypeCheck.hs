@@ -1,7 +1,7 @@
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Tiger.TypeCheck where
+module Tiger.TypeCheck (typeCheck) where
 
 import Tiger.Utils
 import Tiger.Expr

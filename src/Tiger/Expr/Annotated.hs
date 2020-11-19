@@ -3,7 +3,27 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE PatternSynonyms   #-}
 
-module Tiger.Expr.Annotated where
+module Tiger.Expr.Annotated
+    ( -- Data types
+      SourcePos(..)
+    , SrcSpan(..)
+    , Ann(..)
+    , AnnF
+    , PosLValF
+    , PosLVal
+    , PosExprF
+    , PosExpr
+
+      -- patterns
+    , pattern AnnE
+    , pattern While_
+    , pattern For_
+    , pattern Let_
+
+      -- functions
+    , annToAnnF
+    , stripAnnotation
+    ) where
 
 import Tiger.Expr.Types
 

@@ -1,4 +1,8 @@
-module Tiger.Utils where
+module Tiger.Utils
+    ( showText
+    , mapAccumM
+    , adi
+    ) where
 
 import Data.Fix
 import Data.Text

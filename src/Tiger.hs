@@ -2,8 +2,7 @@ module Tiger
   ( module Tiger.Parser
   , module Tiger.Expr
   , module Tiger.TypeCheck
-  )
-where
+  ) where
 
 import Tiger.Parser
 import Tiger.Expr
