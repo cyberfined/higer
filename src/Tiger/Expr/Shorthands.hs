@@ -17,13 +17,19 @@ module Tiger.Expr.Shorthands
     , mkBreak
     , mkLet
     , mkSeq
+    , mkUntypedType
+    , mkUntypedVar
+    , mkUntypedFun
+    , mkTypedType
+    , mkTypedVar
+    , mkTypedFun
     , ($+), ($-), ($*), ($/)
     , ($<), ($<=), ($>), ($>=)
     , ($==), ($!=), ($&&), ($||)
     ) where
 
-import Data.Text
 import Data.Fix
+import Data.Text
 import Tiger.Expr.Types
 
 -- Expr Shorthands
@@ -52,7 +58,7 @@ mkNeg = Fix . Neg
 mkBinop :: Binop -> Expr d -> Expr d -> Expr d
 mkBinop op e1 e2 = Fix (Binop e1 op e2)
 
-mkRecord :: Text -> [(Text, Expr d)] -> Expr d
+mkRecord :: Text -> [RecordField (Expr d)] -> Expr d
 mkRecord tid fs = Fix (Record tid fs)
 
 mkArray :: Text -> Expr d -> Expr d -> Expr d
@@ -72,7 +78,7 @@ mkIf _ = error "mkIf takes 2 or 3 arguments"
 mkWhile :: Expr d -> Expr d -> Expr d
 mkWhile cond body = Fix (While cond body)
 
-mkFor :: Text -> Bool -> Expr d -> Expr d -> Expr d -> Expr d
+mkFor :: Text -> Escaping -> Expr d -> Expr d -> Expr d -> Expr d
 mkFor var esc from to body = Fix (For var esc from to body)
 
 mkBreak :: Expr d
@@ -83,6 +89,24 @@ mkLet decs expr = Fix (Let decs expr)
 
 mkSeq :: [Expr d] -> Expr d
 mkSeq = Fix . Seq
+
+mkUntypedType :: Text -> TypeRVal -> UntypedDec a
+mkUntypedType tid typ = UntypedTypeDec (UntypedType tid typ)
+
+mkUntypedVar :: Text -> Maybe Text -> a -> UntypedDec a
+mkUntypedVar var mtyp val = UntypedVarDec (UntypedVar var mtyp val)
+
+mkUntypedFun :: Text -> [UntypedFunArg] -> Maybe Text -> a -> UntypedDec a
+mkUntypedFun fun args mtyp body = UntypedFunDec (UntypedFun fun args mtyp body)
+
+mkTypedType :: Text -> Type -> TypedDec a
+mkTypedType tid typ = TypedTypeDec (TypedType tid typ)
+
+mkTypedVar :: Text -> Type -> Escaping -> e -> TypedDec e
+mkTypedVar var typ esc val = TypedVarDec (TypedVar var typ esc val)
+
+mkTypedFun :: Text -> [TypedFunArg] -> Type -> e -> TypedDec e
+mkTypedFun fun args typ body = TypedFunDec (TypedFun fun args typ body)
 
 ($+), ($-), ($*), ($/), ($>), ($>=), ($<), ($<=), ($!=), ($==), ($&&), ($||)
     :: Expr d -> Expr d -> Expr d

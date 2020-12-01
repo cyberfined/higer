@@ -25,17 +25,18 @@ module Tiger.Expr.Annotated
     , stripAnnotation
     ) where
 
-import Tiger.Expr.Types
-
 import Data.Text
-import Data.Function(on)
+import Data.Function (on)
 import Data.Functor.Compose
 import Data.Fix
+
+import Tiger.Expr.Types
 
 data SourcePos = SourcePos String Int Int deriving (Eq, Show)
 
 instance Ord SourcePos where
-    (SourcePos _ l1 c1) `compare` (SourcePos _ l2 c2) = (l1 `compare` l2) <> (c1 `compare` c2)
+    (SourcePos _ l1 c1) `compare` (SourcePos _ l2 c2) =
+        (l1 `compare` l2) <> (c1 `compare` c2)
 
 data SrcSpan = SrcSpan { spanBegin :: SourcePos
                        , spanEnd :: SourcePos
@@ -70,7 +71,7 @@ pattern AnnE ann f = Fix (Compose (Ann ann f))
 pattern While_ :: SrcSpan -> e -> e -> PosExprF d e
 pattern While_ ann cond body = Compose (Ann ann (While cond body))
 
-pattern For_ :: SrcSpan -> Text -> Bool -> e -> e -> e -> PosExprF d e
+pattern For_ :: SrcSpan -> Text -> Escaping -> e -> e -> e -> PosExprF d e
 pattern For_  ann var esc from to body = Compose (Ann ann (For var esc from to body))
 
 pattern Let_ :: SrcSpan -> [d e] -> e -> PosExprF d e
