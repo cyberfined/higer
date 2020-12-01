@@ -2,30 +2,31 @@
 
 module Tiger.Parser (parseFromText) where
 
-import Data.Fix
-import Data.Functor.Compose
-import Tiger.Expr hiding(SourcePos(..), ($>))
-import qualified Tiger.Expr as E
-
-import qualified Data.HashSet as HS
-import qualified Data.Set as S
-
-import Data.Text hiding(empty, foldl1)
-import Data.Char(isAlphaNum, isDigit, isSpace, chr, ord)
-import Control.Monad(void, when, join)
-import Data.Functor(($>))
-
-import Text.Megaparsec
+import Control.Monad (void, when, join)
 import Control.Monad.Combinators.Expr
-import Text.Megaparsec.Char hiding(space, printChar)
-import qualified Text.Megaparsec.Char.Lexer as L
+import Data.Char (isAlphaNum, isDigit, isSpace, chr, ord)
+import Data.Fix
+import Data.Functor (($>))
+import Data.Functor.Compose
+import Data.Text hiding (empty, foldl1, cons)
 import Data.Void
+import Text.Megaparsec hiding (pos1)
+import Text.Megaparsec.Char hiding (space, printChar)
+
+import Tiger.Expr hiding (SourcePos(..), ($>))
+
+import qualified Data.HashSet as HashSet
+import qualified Data.Set as Set
+import qualified Data.Text as Text
+import qualified Text.Megaparsec.Char.Lexer as Lexer
+
+import qualified Tiger.Expr as Expr
 
 type Parser = Parsec Void Text
 
 parseFromText :: String -> Text -> Either String (PosExpr UntypedDec)
 parseFromText fpath src = case parse pRootExpr fpath src of
-    Left err -> Left $ errorBundlePretty err
+    Left err  -> Left $ errorBundlePretty err
     Right res -> Right res
 
 pRootExpr :: Parser (PosExpr UntypedDec)
@@ -47,14 +48,15 @@ pExpr = makeExprParser term operators <?> "expression"
 pIdFactor :: Parser (PosExpr UntypedDec)
 pIdFactor = do
     next <- join <$>
-        lookAhead (pId *> optional ((brackets anyButBracket *> optional any) <|> Just <$> any))
+        lookAhead (pId *> optional
+            ((brackets anyButBracket *> optional anyLexeme) <|> Just <$> anyLexeme))
     case next of
         Just '{' -> pRecord -- id {fields}
         Just 'o' -> pArray  -- id [expr] of expr
         Just '(' -> pCall   -- id (args)
-        _ -> pLVal          -- id | id [expr] | (id | id [expr]) . lval
+        _        -> pLVal   -- id | id [expr] | (id | id [expr]) . lval
   where anyButBracket = some $ satisfy (/=']')
-        any = lexeme $ satisfy $ const True
+        anyLexeme = lexeme $ satisfy $ const True
 
 operators :: [[Operator Parser (PosExpr UntypedDec)]]
 operators = [ [negop]
@@ -81,7 +83,7 @@ operator "<" = void $ lexeme $ try (string "<" <* notFollowedBy (char '=' <|> ch
 operator n = void $ symbol n
 
 pIntLit :: Parser (PosExpr UntypedDec)
-pIntLit = annotate1 (IntLit <$> lexeme L.decimal <?> "integer")
+pIntLit = annotate1 (IntLit <$> lexeme Lexer.decimal <?> "integer")
 
 pStrLit :: Parser (PosExpr UntypedDec)
 pStrLit = annotate1
@@ -150,7 +152,8 @@ pLVal = annotate1 $ do
         consDot a@(AnnE pos1 _) (AnnE pos2 lv) = case lv of
             LVal (Var b) -> AnnE (pos1 <> pos2) (LVal $ Dot a b 0)
             LVal (Index (AnnE pos3 (LVal (Var b))) c) ->
-                AnnE (pos1 <> pos2) (LVal $ Index (AnnE (pos1 <> pos3) (LVal $ Dot a b 0)) c)
+                AnnE (pos1 <> pos2)
+                    (LVal $ Index (AnnE (pos1 <> pos3) (LVal $ Dot a b 0)) c)
             _ -> error "unexpected"
         consDot _ _ = error "unexpected"
         unExpr (AnnE _ (LVal lv)) = lv
@@ -160,7 +163,7 @@ pRecord :: Parser (PosExpr UntypedDec)
 pRecord = annotate1
   (   Record
   <$> pId
-  <*> braces (sepBy ((,) <$> pId <*> (symbol "=" *> pExpr)) (symbol ","))
+  <*> braces (sepBy (RecordField <$> pId <*> (symbol "=" *> pExpr)) (symbol ","))
   <?> "record creation"
   )
 
@@ -202,7 +205,7 @@ pFor :: Parser (PosExpr UntypedDec)
 pFor = annotate1
   (   For
   <$> (reserved "for" *> pId)
-  <*> (return False)
+  <*> (return Remaining)
   <*> (symbol ":=" *> pExpr)
   <*> (reserved "to" *> pExpr)
   <*> (reserved "do" *> pExpr)
@@ -229,13 +232,15 @@ pLet = annotate1
   )
 
 type Dec = UntypedDec (PosExpr UntypedDec)
+type VarDec = UntypedVar (PosExpr UntypedDec)
+type FunDec = UntypedFun (PosExpr UntypedDec)
 
 pDec :: Parser Dec
-pDec =  pTypeDec
-    <|> pVarDec
-    <|> pFunDec
+pDec =  UntypedTypeDec <$> pTypeDec
+    <|> UntypedVarDec  <$> pVarDec
+    <|> UntypedFunDec  <$> pFunDec
 
-pTypeDec :: Parser Dec
+pTypeDec :: Parser UntypedType
 pTypeDec =  UntypedType
         <$> (reserved "type" *> pId)
         <*> (symbol "=" *> pTypeRVal)
@@ -243,26 +248,29 @@ pTypeDec =  UntypedType
 
 pTypeRVal :: Parser TypeRVal
 pTypeRVal =  (TypeId <$> try pId)
-         <|> (TypeRecord <$> braces (sepBy1 pTypeField (symbol ",")))
+         <|> (TypeRecord <$> braces (sepBy1 pRecordField (symbol ",")))
          <|> (TypeArray <$> (reserved "array" *> reserved "of" *> pId))
 
-pVarDec :: Parser Dec
+pVarDec :: Parser VarDec
 pVarDec =  UntypedVar
        <$> (reserved "var" *> pId)
        <*> optional (try $ symbol ":" *> notFollowedBy (char '=') *> pId)
        <*> (symbol ":=" *> pExpr)
        <?> "variable declaration"
 
-pFunDec :: Parser Dec
+pFunDec :: Parser FunDec
 pFunDec =  UntypedFun
        <$> (reserved "function" *> pId)
-       <*> parens (sepBy pTypeField (symbol ","))
+       <*> parens (sepBy pFunArg (symbol ","))
        <*> optional (symbol ":" *> pId)
        <*> (symbol "=" *> pExpr)
        <?> "function declaration"
 
-pTypeField :: Parser (Text, Text)
-pTypeField = (,) <$> pId <*> (symbol ":" *> pId)
+pRecordField :: Parser (RecordField Text)
+pRecordField = RecordField <$> pId <*> (symbol ":" *> pId)
+
+pFunArg :: Parser UntypedFunArg
+pFunArg = UntypedFunArg <$> pId <*> (symbol ":" *> pId)
 
 reserved :: Text -> Parser ()
 reserved = void . symbol
@@ -271,32 +279,32 @@ pId :: Parser Text
 pId = lexeme $ do
     offset <- getOffset
     ident <-
-        cons
+        Text.cons
         <$> letterChar
         <*> takeWhileP Nothing (\x -> isAlphaNum x || x == '_')
-    when (ident `HS.member` reservedWords) $
+    when (ident `HashSet.member` reservedWords) $
         throwError offset $ "unexpected reserved word " ++ unpack ident
     return ident
 
 space :: Parser ()
-space = L.space space1 empty (L.skipBlockComment "/*" "*/")
+space = Lexer.space space1 empty (Lexer.skipBlockComment "/*" "*/")
 
 lexeme :: Parser a -> Parser a
-lexeme = L.lexeme space
+lexeme = Lexer.lexeme space
 
 symbol :: Text -> Parser Text
-symbol = L.symbol space
+symbol = Lexer.symbol space
 
 braces, brackets, parens :: Parser a -> Parser a
 braces = between (symbol "{") (symbol "}")
 brackets = between (symbol "[") (symbol "]")
 parens = between (symbol "(") (symbol ")")
 
-reservedWords :: HS.HashSet Text
+reservedWords :: HashSet.HashSet Text
 reservedWords =
-    HS.fromList [ "type", "array", "of", "var", "function", "let", "in", "end"
-                , "if", "then", "else", "nil", "while", "for", "do", "to", "break"
-                ]
+    HashSet.fromList [ "type", "array", "of", "var", "function", "let", "in", "end"
+                     , "if", "then", "else", "nil", "while", "for", "do", "to", "break"
+                     ]
 
 annotate :: Parser a -> Parser (Ann SrcSpan a)
 annotate p = do
@@ -305,7 +313,9 @@ annotate p = do
     end <- getSourcePos
     return $ Ann (fromSourcePos beg end) res
 
-annotate1 :: Functor f => Parser (f (Fix (AnnF SrcSpan f))) -> Parser (Fix (AnnF SrcSpan f))
+annotate1 :: Functor f
+          => Parser (f (Fix (AnnF SrcSpan f)))
+          -> Parser (Fix (AnnF SrcSpan f))
 annotate1 = fmap annToAnnF . annotate
 
 unannotate :: Fix (Compose (Ann ann) g) -> g (Fix (Compose (Ann ann) g))
@@ -313,7 +323,7 @@ unannotate = annotated . getCompose . unFix
 
 fromSourcePos :: SourcePos -> SourcePos -> SrcSpan
 fromSourcePos bpos epos = SrcSpan (convert bpos) (convert epos)
-  where convert (SourcePos fpath ln cl) = E.SourcePos fpath (unPos ln) (unPos cl)
+  where convert (SourcePos fpath ln cl) = Expr.SourcePos fpath (unPos ln) (unPos cl)
 
 throwError :: Int -> String -> Parser a
-throwError offset = parseError . FancyError offset . S.singleton . ErrorFail
+throwError offset = parseError . FancyError offset . Set.singleton . ErrorFail
