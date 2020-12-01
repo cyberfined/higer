@@ -1,10 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
+
 module ParserTests (tests) where
 
+import Data.Text (Text, unpack)
 import Test.HUnit
-import Common
-import Data.Text(Text, unpack)
 
+import Common
 import Tiger.Expr
 import Tiger.Parser
 
@@ -54,17 +55,22 @@ caseLVal = mkTestLabel "lvals parsing"
     , assertParse "x.y" $ mkLVal (mkDot (Var "x") "y" 0)
     , assertParse "x.y.z" $ mkLVal (mkDot (mkDot (Var "x") "y" 0) "z" 0)
     , assertParse "x[0]" $ mkLVal (mkIndex (Var "x") (mkIntLit 0))
-    , assertParse "x[y+z]" $ mkLVal (mkIndex (Var "x") (mkLVal (Var "y") $+ mkLVal (Var "z")))
+    , assertParse "x[y+z]" $
+        mkLVal (mkIndex (Var "x") (mkLVal (Var "y") $+ mkLVal (Var "z")))
     , assertParse "x[0].y[1].z[2]" $
         mkLVal $ mkIndex
-            (mkDot (mkIndex (mkDot (mkIndex (Var "x") (mkIntLit 0)) "y" 0) (mkIntLit 1)) "z" 0)
+            (mkDot
+                (mkIndex (mkDot (mkIndex (Var "x") (mkIntLit 0)) "y" 0) (mkIntLit 1))
+                "z"
+                0)
             (mkIntLit 2)
     , assertParse "x[y.z[0] * 2]" $
         mkLVal $
             mkIndex (Var "x")
             (mkLVal (mkIndex (mkDot (Var "y") "z" 0) (mkIntLit 0)) $* mkIntLit 2)
     , assertParse "x[0] + y[1]" $
-        mkLVal (mkIndex (Var "x") (mkIntLit 0)) $+ mkLVal (mkIndex (Var "y") (mkIntLit 1))
+        mkLVal (mkIndex (Var "x") (mkIntLit 0)) $+
+        mkLVal (mkIndex (Var "y") (mkIntLit 1))
     , assertParseFail "_test"
     , assertParseFail "_123"
     , assertParseFail "123test"
@@ -111,8 +117,9 @@ caseOps = mkTestLabel "operations parsing"
 caseRecArrCall :: Test
 caseRecArrCall = mkTestLabel "record, array, call parsing"
     [ assertParse "rec {}" $ mkRecord "rec" []
-    , assertParse "rec {x=1}" $ mkRecord "rec" [("x", mkIntLit 1)]
-    , assertParse "rec { x = 1, y = 2 }" $ mkRecord "rec" [("x", mkIntLit 1), ("y", mkIntLit 2)]
+    , assertParse "rec {x=1}" $ mkRecord "rec" [RecordField "x" (mkIntLit 1)]
+    , assertParse "rec { x = 1, y = 2 }" $
+        mkRecord "rec" [RecordField "x" (mkIntLit 1), RecordField "y" (mkIntLit 2)]
     , assertParse "arr [ 12 ] of 0" $ mkArray "arr" (mkIntLit 12) (mkIntLit 0)
     , assertParse "test()" $ mkCall "test" []
     , assertParse "test(x+y, 12)" $
@@ -143,9 +150,10 @@ caseAssignment = mkTestLabel "assignment parsing"
 
 caseIfWhileFor :: Test
 caseIfWhileFor = mkTestLabel "if, while, for parsing"
-    [ assertParse "if x >= y then print(z)" $ mkIf [ mkLVal (Var "x") $>= mkLVal (Var "y")
-                                                   , mkCall "print" [mkLVal (Var "z")]
-                                                   ]
+    [ assertParse "if x >= y then print(z)" $
+        mkIf [ mkLVal (Var "x") $>= mkLVal (Var "y")
+             , mkCall "print" [mkLVal (Var "z")]
+             ]
     , assertParse "if x >= y & y = z then y else z" $
         mkIf [ (mkLVal (Var "x") $>= mkLVal (Var "y")) $&&
                (mkLVal (Var "y") $== mkLVal (Var "z"))
@@ -182,7 +190,7 @@ caseIfWhileFor = mkTestLabel "if, while, for parsing"
         mkWhile (mkLVal (Var "i") $> mkIntLit 0)
                 (mkAssign (Var "i") (mkLVal (Var "i") $- mkIntLit 1))
     , assertParse "for i:=1 to 7 do (print(i-1); print(i))" $
-        mkFor "i" False (mkIntLit 1) (mkIntLit 7) $
+        mkFor "i" Remaining (mkIntLit 1) (mkIntLit 7) $
             mkSeq [ mkCall "print" [mkLVal (Var "i") $- mkIntLit 1]
                   , mkCall "print" [mkLVal (Var "i")]
                   ]
@@ -198,26 +206,33 @@ caseIfWhileFor = mkTestLabel "if, while, for parsing"
 caseLet :: Test
 caseLet = mkTestLabel "let parsing"
     [ assertParse "let type t = int in 0 end" $
-        mkLet [ UntypedType "t" (TypeId "int") ] (mkIntLit 0)
-    , assertParse "let type t = {x: string, y: int} in 5 end" $
-        mkLet [ UntypedType "t" (TypeRecord [("x", "string"), ("y", "int")]) ] (mkIntLit 5)
+        mkLet [ mkUntypedType "t" (TypeId "int") ] (mkIntLit 0)
+    , assertParse "let type t = {x: string, y: int} in 5 end" $ mkLet
+        [ mkUntypedType "t"
+            (TypeRecord [RecordField "x" "string", RecordField "y" "int"])
+        ]
+        (mkIntLit 5)
     , assertParse "let type t = array of int in 5 end" $
-        mkLet [ UntypedType "t" (TypeArray "int") ] (mkIntLit 5)
-    , assertParse "let var x := 12 in print(x) end" $
-        mkLet [ UntypedVar "x" Nothing (mkIntLit 12) ] (mkCall "print" [mkLVal (Var "x")])
+        mkLet [ mkUntypedType "t" (TypeArray "int") ] (mkIntLit 5)
+    , assertParse "let var x := 12 in print(x) end" $ mkLet
+        [ mkUntypedVar "x" Nothing (mkIntLit 12) ] (mkCall "print" [mkLVal (Var "x")])
     , assertParse "let var x : int := 12 in x end" $
-        mkLet [ UntypedVar "x" (Just "int") (mkIntLit 12) ] (mkLVal (Var "x"))
-    , assertParse "let function p5() = print(5) in p5() end" $
-        mkLet [ UntypedFun "p5" [] Nothing (mkCall "print" [mkIntLit 5]) ] (mkCall "p5" [])
+        mkLet [ mkUntypedVar "x" (Just "int") (mkIntLit 12) ] (mkLVal (Var "x"))
+    , assertParse "let function p5() = print(5) in p5() end" $ mkLet
+        [ mkUntypedFun "p5" [] Nothing (mkCall "print" [mkIntLit 5]) ] (mkCall "p5" [])
     , assertParse "let function id (x: int) = x in id(5) end" $
-        mkLet [ UntypedFun "id" [("x", "int")] Nothing (mkLVal (Var "x")) ] $
+        mkLet [ mkUntypedFun "id" [UntypedFunArg "x" "int"] Nothing (mkLVal (Var "x")) ] $
             mkCall "id" [mkIntLit 5]
-    , assertParse "let function add5(x:int): int = x+5 in add5(1) end" $
-        mkLet [ UntypedFun "add5" [("x", "int")] (Just "int") (mkLVal (Var "x") $+ mkIntLit 5) ]
-            (mkCall "add5" [mkIntLit 1])
+    , assertParse "let function add5(x:int): int = x+5 in add5(1) end" $ mkLet
+        [ mkUntypedFun "add5"
+            [UntypedFunArg "x" "int"]
+            (Just "int")
+            (mkLVal (Var "x") $+ mkIntLit 5)
+        ]
+        (mkCall "add5" [mkIntLit 1])
     , assertParse "let type t = int var x : t := 12 in x := x + 1; print(x) end" $
-        mkLet [ UntypedType "t" (TypeId "int")
-              , UntypedVar "x" (Just "t") (mkIntLit 12)
+        mkLet [ mkUntypedType "t" (TypeId "int")
+              , mkUntypedVar "x" (Just "t") (mkIntLit 12)
               ] $ mkSeq
               [ mkAssign (Var "x") (mkLVal (Var "x") $+ mkIntLit 1)
               , mkCall "print" [mkLVal (Var "x")]
@@ -238,4 +253,5 @@ assertParseFail src = case parseFromText "<string>" src of
     Left _ -> return ()
     Right res ->
         assertFailure $ "Unexpected success parsing `"
-            ++ unpack src ++ "`:\nParsed value " ++ show (ShowUntypedExpr $ stripAnnotation res)
+            ++ unpack src ++ "`:\nParsed value "
+            ++ show (ShowUntypedExpr $ stripAnnotation res)

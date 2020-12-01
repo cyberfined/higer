@@ -1,15 +1,16 @@
 {-# LANGUAGE OverloadedStrings #-}
+
 module EscapeAnalysisTests (tests) where
 
 import Test.HUnit
-import Common
-import Data.Text(Text, unpack, unlines)
-import Prelude hiding(unlines)
+import Data.Text (Text, unpack, unlines)
+import Prelude hiding (unlines)
 
+import Common
+import Tiger.EscapeAnalysis
 import Tiger.Expr
 import Tiger.Parser
 import Tiger.TypeCheck
-import Tiger.EscapeAnalysis
 
 tests :: Test
 tests = mkTestLabel "escape analysis tests"
@@ -18,7 +19,7 @@ tests = mkTestLabel "escape analysis tests"
         , "in v"
         , "end"
         ] $ mkLet
-        [ TypedVar "v" TInt False (mkIntLit 1) ] $ mkLVal (Var "v")
+        [ mkTypedVar "v" TInt Remaining (mkIntLit 1) ] $ mkLVal (Var "v")
     , assertEscapeAnalysisML
         [ "let var x := 1"
         , "in"
@@ -27,9 +28,9 @@ tests = mkTestLabel "escape analysis tests"
         , "end"
         , "end"
         ] $ mkLet
-        [ TypedVar "x" TInt False (mkIntLit 1)
+        [ mkTypedVar "x" TInt Remaining (mkIntLit 1)
         ] $ mkLet
-        [ TypedVar "y" TInt False (mkIntLit 2)
+        [ mkTypedVar "y" TInt Remaining (mkIntLit 2)
         ] $ mkLVal (Var "x") $+ mkLVal (Var "y")
     , assertEscapeAnalysisML
         [ "let var x := 7"
@@ -37,8 +38,8 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn()"
         , "end"
         ] $ mkLet
-        [ TypedVar "x" TInt True (mkIntLit 7)
-        , TypedFun "fn" [] TInt (mkLVal (Var "x"))
+        [ mkTypedVar "x" TInt Escaping (mkIntLit 7)
+        , mkTypedFun "fn" [] TInt (mkLVal (Var "x"))
         ] $ mkCall "fn" []
     , assertEscapeAnalysisML
         [ "let var x := 7"
@@ -46,8 +47,9 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn(1)"
         , "end"
         ] $ mkLet
-        [ TypedVar "x" TInt False (mkIntLit 7)
-        , TypedFun "fn" [("x", TInt, False)] TInt (mkLVal (Var "x") $+ mkIntLit 1)
+        [ mkTypedVar "x" TInt Remaining (mkIntLit 7)
+        , mkTypedFun "fn"
+            [TypedFunArg "x" TInt Remaining] TInt (mkLVal (Var "x") $+ mkIntLit 1)
         ] $ mkCall "fn" [mkIntLit 1]
     , assertEscapeAnalysisML
         [ "let var x := 7"
@@ -61,11 +63,11 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn()"
         , "end"
         ] $ mkLet
-        [ TypedVar "x" TInt True (mkIntLit 7)
-        , TypedFun "fn" [] TInt $ mkLet
-            [ TypedVar "y" TInt False (mkIntLit 8)
+        [ mkTypedVar "x" TInt Escaping (mkIntLit 7)
+        , mkTypedFun "fn" [] TInt $ mkLet
+            [ mkTypedVar "y" TInt Remaining (mkIntLit 8)
             ] $ mkLet
-            [ TypedVar "z" TInt False (mkIntLit 9)
+            [ mkTypedVar "z" TInt Remaining (mkIntLit 9)
             ] $ (mkLVal (Var "x") $+ mkLVal (Var "y")) $+ mkLVal (Var "z")
         ] $ mkCall "fn" []
     , assertEscapeAnalysisML
@@ -77,9 +79,9 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn()"
         , "end"
         ] $ mkLet
-        [ TypedVar "x" TInt False (mkIntLit 7)
-        , TypedFun "fn" [] TInt $ mkLet
-            [ TypedVar "x" TInt False (mkIntLit 8)
+        [ mkTypedVar "x" TInt Remaining (mkIntLit 7)
+        , mkTypedFun "fn" [] TInt $ mkLet
+            [ mkTypedVar "x" TInt Remaining (mkIntLit 8)
             ] $ mkLVal (Var "x") $+ mkIntLit 1
         ] $ mkCall "fn" []
     , assertEscapeAnalysisML
@@ -90,8 +92,8 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn1(1)"
         , "end"
         ] $ mkLet
-        [ TypedFun "fn1" [("x", TInt, True)] TInt $ mkLet
-            [ TypedFun "fn2" [] TInt $ mkLVal (Var "x") $+ mkIntLit 1
+        [ mkTypedFun "fn1" [TypedFunArg "x" TInt Escaping] TInt $ mkLet
+            [ mkTypedFun "fn2" [] TInt $ mkLVal (Var "x") $+ mkIntLit 1
             ] $ mkCall "fn2" []
         ] $ mkCall "fn1" [mkIntLit 1]
     , assertEscapeAnalysisML
@@ -105,9 +107,9 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn1(1)"
         , "end"
         ] $ mkLet
-        [ TypedFun "fn1" [("x", TInt, False)] TInt $ mkLet
-            [ TypedFun "fn2" [] TInt $ mkLet
-                [ TypedVar "x" TInt False (mkIntLit 1)
+        [ mkTypedFun "fn1" [TypedFunArg "x" TInt Remaining] TInt $ mkLet
+            [ mkTypedFun "fn2" [] TInt $ mkLet
+                [ mkTypedVar "x" TInt Remaining (mkIntLit 1)
                 ] $ mkLVal (Var "x") $+ mkIntLit 7
             ] $ mkCall "fn2" []
         ] $ mkCall "fn1" [mkIntLit 1]
@@ -120,10 +122,10 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn1(1)"
         , "end"
         ] $ mkLet
-        [ TypedFun "fn1" [("x", TInt, True)] TInt $ mkLet
-            [ TypedFun "fn2" [] TInt $ mkSeq
+        [ mkTypedFun "fn1" [TypedFunArg "x" TInt Escaping] TInt $ mkLet
+            [ mkTypedFun "fn2" [] TInt $ mkSeq
                 [ mkIntLit 1
-                , mkLet [ TypedVar "x" TInt False (mkIntLit 7)
+                , mkLet [ mkTypedVar "x" TInt Remaining (mkIntLit 7)
                         ] $ mkLVal (Var "x") $+ mkIntLit 2
                 , mkAssign (Var "x") (mkLVal (Var "x") $+ mkIntLit 7)
                 , mkLVal (Var "x")
@@ -140,9 +142,9 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn1()"
         , "end"
         ] $ mkLet
-        [ TypedFun "fn1" [] TInt $ mkLet
-            [ TypedVar "i" TInt True (mkIntLit 7)
-            , TypedFun "fn2" [] TInt $ mkIf
+        [ mkTypedFun "fn1" [] TInt $ mkLet
+            [ mkTypedVar "i" TInt Escaping (mkIntLit 7)
+            , mkTypedFun "fn2" [] TInt $ mkIf
                 [ mkIntLit 2 $< mkIntLit 1
                 , mkIntLit 0
                 , mkLVal (Var "i") $+ mkIntLit 1
@@ -161,12 +163,12 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn1()"
         , "end"
         ] $ mkLet
-        [ TypedFun "fn1" [] TInt $ mkLet
-            [ TypedVar "i" TInt True (mkIntLit 7)
-            , TypedFun "fn2" [] TInt $ mkIf
+        [ mkTypedFun "fn1" [] TInt $ mkLet
+            [ mkTypedVar "i" TInt Escaping (mkIntLit 7)
+            , mkTypedFun "fn2" [] TInt $ mkIf
                 [ mkIntLit 2 $< mkIntLit 1
                 , mkLet
-                    [ TypedFun "fn3" [] TInt (mkLVal (Var "i") $+ mkIntLit 1)
+                    [ mkTypedFun "fn3" [] TInt (mkLVal (Var "i") $+ mkIntLit 1)
                     ] $ mkCall "fn3" []
                 , mkIntLit 0
                 ]
@@ -177,8 +179,8 @@ tests = mkTestLabel "escape analysis tests"
         , "let var i := 33"
         , "in print(chr(i))"
         , "end"
-        ] $ mkFor "i" False (mkIntLit 7) (mkIntLit 10) $ mkLet
-        [ TypedVar "i" TInt False (mkIntLit 33)
+        ] $ mkFor "i" Remaining (mkIntLit 7) (mkIntLit 10) $ mkLet
+        [ mkTypedVar "i" TInt Remaining (mkIntLit 33)
         ] $ mkCall "print" [mkCall "chr" [mkLVal (Var "i")]]
     , assertEscapeAnalysisML
         [ "let var x := 0"
@@ -187,9 +189,9 @@ tests = mkTestLabel "escape analysis tests"
         , "x"
         , "end"
         ] $ mkLet
-        [ TypedVar "x" TInt False (mkIntLit 0)
+        [ mkTypedVar "x" TInt Remaining (mkIntLit 0)
         ] $ mkSeq
-        [ mkFor "i" False (mkIntLit 0) (mkIntLit 10)
+        [ mkFor "i" Remaining (mkIntLit 0) (mkIntLit 10)
             (mkAssign (Var "x") (mkLVal (Var "x") $+ mkLVal (Var "i")))
         , mkLVal (Var "x")
         ]
@@ -203,10 +205,10 @@ tests = mkTestLabel "escape analysis tests"
         , "i"
         , "end"
         ] $ mkLet
-        [ TypedVar "i" TInt False (mkIntLit 0)
+        [ mkTypedVar "i" TInt Remaining (mkIntLit 0)
         ] $ mkSeq
-        [ mkFor "i" True (mkIntLit 0) (mkIntLit 10) $ mkLet
-            [ TypedFun "fn" [] TInt (mkLVal (Var "i") $+ mkIntLit 1)
+        [ mkFor "i" Escaping (mkIntLit 0) (mkIntLit 10) $ mkLet
+            [ mkTypedFun "fn" [] TInt (mkLVal (Var "i") $+ mkIntLit 1)
             ] $ mkCall "print" [mkCall "chr" [mkCall "fn" []]]
         , mkLVal (Var "i")
         ]
@@ -220,10 +222,10 @@ tests = mkTestLabel "escape analysis tests"
         , "x"
         , "end"
         ] $ mkLet
-        [ TypedVar "x" TInt True (mkIntLit 0)
+        [ mkTypedVar "x" TInt Escaping (mkIntLit 0)
         ] $ mkSeq
-        [ mkFor "i" True (mkIntLit 0) (mkIntLit 10) $ mkLet
-            [ TypedFun "fn" [] TInt $ mkSeq
+        [ mkFor "i" Escaping (mkIntLit 0) (mkIntLit 10) $ mkLet
+            [ mkTypedFun "fn" [] TInt $ mkSeq
                 [ mkAssign (Var "x") (mkLVal (Var "x") $+ mkLVal (Var "i"))
                 , mkLVal (Var "x")
                 ]
@@ -235,7 +237,7 @@ tests = mkTestLabel "escape analysis tests"
         , "in (while i < 10 do i := i + 1; i)"
         , "end"
         ] $ mkLet
-        [ TypedVar "i" TInt False (mkIntLit 7)
+        [ mkTypedVar "i" TInt Remaining (mkIntLit 7)
         ] $ mkSeq
         [ mkWhile (mkLVal (Var "i") $< mkIntLit 10) $
             mkAssign (Var "i") (mkLVal (Var "i") $+ mkIntLit 1)
@@ -249,10 +251,11 @@ tests = mkTestLabel "escape analysis tests"
         , "end; i)"
         , "end"
         ] $ mkLet
-        [ TypedVar "i" TInt True (mkIntLit 7)
+        [ mkTypedVar "i" TInt Escaping (mkIntLit 7)
         ] $ mkSeq
         [ mkWhile (mkLVal (Var "i") $< mkIntLit 10) $ mkLet
-            [ TypedFun "fn" [] TUnit $ mkAssign (Var "i") (mkLVal (Var "i") $+ mkIntLit 1)
+            [ mkTypedFun "fn" [] TUnit $
+                mkAssign (Var "i") (mkLVal (Var "i") $+ mkIntLit 1)
             ] $ mkCall "fn" []
         , mkLVal (Var "i")
         ]
@@ -262,8 +265,8 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn()"
         , "end"
         ] $ mkLet
-        [ TypedVar "i" TInt True (mkIntLit 8)
-        , TypedFun "fn" [] TUnit (mkAssign (Var "i") (mkIntLit 7))
+        [ mkTypedVar "i" TInt Escaping (mkIntLit 8)
+        , mkTypedFun "fn" [] TUnit (mkAssign (Var "i") (mkIntLit 7))
         ] $ mkCall "fn" []
     , assertEscapeAnalysisML
         [ "let function fn1(i: int) ="
@@ -275,11 +278,11 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn1(2)"
         , "end"
         ] $ mkLet
-        [ TypedFun "fn1" [("i", TInt, False)] TUnit $ mkSeq
+        [ mkTypedFun "fn1" [TypedFunArg "i" TInt Remaining] TUnit $ mkSeq
             [ mkCall "print" [mkCall "chr" [mkLVal $ Var "i"]]
             , mkLet
-                [ TypedVar "i" TInt True (mkIntLit 7)
-                , TypedFun "fn2" [] TUnit (mkAssign (Var "i") (mkIntLit 1))
+                [ mkTypedVar "i" TInt Escaping (mkIntLit 7)
+                , mkTypedFun "fn2" [] TUnit (mkAssign (Var "i") (mkIntLit 1))
                 ] $ mkCall "fn2" []
             ]
         ] $ mkCall "fn1" [mkIntLit 2]
@@ -292,9 +295,9 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn1(2)"
         , "end"
         ] $ mkLet
-        [ TypedFun "fn1" [("i", TInt, True)] TUnit $ mkLet
-            [ TypedFun "fn2" [] TUnit $ mkAssign (Var "i") (mkIntLit 1)
-            , TypedVar "i" TInt False $ mkIntLit 7
+        [ mkTypedFun "fn1" [TypedFunArg "i" TInt Escaping] TUnit $ mkLet
+            [ mkTypedFun "fn2" [] TUnit $ mkAssign (Var "i") (mkIntLit 1)
+            , mkTypedVar "i" TInt Remaining $ mkIntLit 7
             ] $ mkCall "fn2" []
         ] $ mkCall "fn1" [mkIntLit 2]
     , assertEscapeAnalysisML
@@ -307,10 +310,10 @@ tests = mkTestLabel "escape analysis tests"
         , "in fn1(2)"
         , "end"
         ] $ mkLet
-        [ TypedFun "fn1" [("i", TInt, True)] TUnit $ mkLet
-            [ TypedFun "fn2" [] TUnit $ mkAssign (Var "i") (mkIntLit 7)
-            , TypedVar "i" TInt True (mkIntLit 5)
-            , TypedFun "fn3" [] TUnit $ mkAssign (Var "i") (mkIntLit 1)
+        [ mkTypedFun "fn1" [TypedFunArg "i" TInt Escaping] TUnit $ mkLet
+            [ mkTypedFun "fn2" [] TUnit $ mkAssign (Var "i") (mkIntLit 7)
+            , mkTypedVar "i" TInt Escaping (mkIntLit 5)
+            , mkTypedFun "fn3" [] TUnit $ mkAssign (Var "i") (mkIntLit 1)
             ] $ mkCall "fn3" []
         ] $ mkCall "fn1" [mkIntLit 2]
     ]
