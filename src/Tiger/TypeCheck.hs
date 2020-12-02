@@ -1,6 +1,6 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase                 #-}
-{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Tiger.TypeCheck (typeCheck) where
 
@@ -45,66 +45,67 @@ data CheckState = CheckState
     , curPos :: SrcSpan
     }
 
-newtype TypeCheckM a = TypeCheckM
-    { unTypeCheckM :: ReaderT CheckContext (StateT CheckState (Except Text)) a
-    } deriving (Functor, Applicative, Monad, MonadReader CheckContext, MonadError Text)
-
-withNewEnv :: TypeCheckM a -> TypeCheckM a
-withNewEnv (TypeCheckM ma) = TypeCheckM $ do
+withNewEnv :: MonadState CheckState m => m a -> m a
+withNewEnv ma = do
     modify (\st -> st{envs = Env HashMap.empty HashMap.empty:envs st})
     res <- ma
     modify (\st -> st{envs = tail $ envs st})
     return res
 
-getCurPos :: TypeCheckM SrcSpan
-getCurPos = TypeCheckM $ gets curPos
+getCurPos :: MonadState CheckState m => m SrcSpan
+getCurPos = gets curPos
 
-setCurPos :: SrcSpan -> TypeCheckM ()
-setCurPos pos = TypeCheckM $ modify (\st -> st {curPos = pos})
+setCurPos :: MonadState CheckState m => SrcSpan -> m ()
+setCurPos pos = modify (\st -> st {curPos = pos})
 
-withinLoop :: TypeCheckM a -> TypeCheckM a
+withinLoop :: MonadReader CheckContext m => m a -> m a
 withinLoop = local (\st -> st {inLoop = True})
 
-getInLoop :: TypeCheckM Bool
+getInLoop :: MonadReader CheckContext m => m Bool
 getInLoop = reader inLoop
 
-lookupVar :: Text -> TypeCheckM (Maybe Type)
-lookupVar var = TypeCheckM $
-    gets (listToMaybe . mapMaybe (HashMap.lookup var . venv) . envs)
+getSourceCode :: MonadReader CheckContext m => m Text
+getSourceCode = reader sourceCode
 
-lookupFun :: Text -> TypeCheckM (Maybe Type)
+lookupVar :: MonadState CheckState m => Text -> m (Maybe Type)
+lookupVar var = gets (listToMaybe . mapMaybe (HashMap.lookup var . venv) . envs)
+
+lookupFun :: MonadState CheckState m => Text -> m (Maybe Type)
 lookupFun = lookupVar
 
-lookupType :: Text -> TypeCheckM (Maybe Type)
-lookupType typ = TypeCheckM $
-    gets (listToMaybe . mapMaybe (HashMap.lookup typ . tenv) . envs)
+lookupType :: MonadState CheckState m => Text -> m (Maybe Type)
+lookupType typ = gets (listToMaybe . mapMaybe (HashMap.lookup typ . tenv) . envs)
 
-lookupTypeErr :: Text -> TypeCheckM Type
+lookupTypeErr :: (MonadError Text m, MonadReader CheckContext m, MonadState CheckState m)
+              => Text
+              -> m Type
 lookupTypeErr tid =
     lookupType tid >>= maybe (prettyError $ "undefined type " <> tid) return
 
-insertVar :: Text -> Type -> TypeCheckM ()
-insertVar var typ = TypeCheckM . modify $ \st ->
+insertVar :: MonadState CheckState m => Text -> Type -> m ()
+insertVar var typ = modify $ \st ->
     let (e:es) = envs st
     in st{envs = e{venv = HashMap.insert var typ $ venv e}:es}
 
-insertFun :: Text -> Type -> TypeCheckM ()
+insertFun :: MonadState CheckState m => Text -> Type -> m ()
 insertFun = insertVar
 
-insertType :: Text -> Type -> TypeCheckM ()
-insertType tid typ = TypeCheckM . modify $ \st ->
+insertType :: MonadState CheckState m => Text -> Type -> m ()
+insertType tid typ = modify $ \st ->
     let (e:es) = envs st
     in st{envs = e{tenv = HashMap.insert tid typ $ tenv e}:es}
 
-deleteVar :: Text -> TypeCheckM ()
-deleteVar var = TypeCheckM . modify $ \st ->
+deleteVar :: MonadState CheckState m => Text -> m ()
+deleteVar var = modify $ \st ->
     let (e:es) = envs st
     in st{envs = e{venv = HashMap.delete var $ venv e}:es}
 
-prettyError :: Text -> TypeCheckM a
+prettyError :: (MonadError Text m, MonadReader CheckContext m, MonadState CheckState m)
+            => Text
+            -> m a
 prettyError err = do
     SourcePos fpath ln cl <- spanBegin <$> getCurPos
-    src <- reader sourceCode
+    src <- getSourceCode
     let strLn = showText ln
         margin = Text.replicate (Text.length strLn + 2) " "
         errMsg =  pack fpath <> ":" <> strLn <> ":" <> showText cl
@@ -119,9 +120,7 @@ prettyError err = do
 typeCheck :: Text -> PosExpr UntypedDec -> Either Text (Expr TypedDec)
 typeCheck src expr =
     runExcept (evalStateT (runReaderT (run expr) initCtx) initSt)
-  where run = unTypeCheckM
-            . fmap snd
-            . adi (typeCheckExprF . annotated . getCompose) setContext
+  where run = fmap snd . adi (typeCheckExprF . annotated . getCompose) setContext
         initSt = CheckState { envs   = initEnvs
                             , curPos = SrcSpan iniPos iniPos
                             }
@@ -149,22 +148,23 @@ typeCheck src expr =
                   }
             ]
 
-setContext :: (PosExpr UntypedDec -> TypeCheckM (Type, Expr TypedDec))
+setContext :: (MonadReader CheckContext m, MonadState CheckState m)
+           => (PosExpr UntypedDec -> m (Type, Expr TypedDec))
            -> PosExpr UntypedDec
-           -> TypeCheckM (Type, Expr TypedDec)
+           -> m (Type, Expr TypedDec)
 setContext f = \case
     expr@(AnnE ann For{})   -> loop ann expr
     expr@(AnnE ann While{}) -> loop ann expr
     expr -> do
         setCurPos (annotation $ getCompose $ unFix expr)
         f expr
-  where loop :: SrcSpan -> PosExpr UntypedDec -> TypeCheckM (Type, Expr TypedDec)
-        loop ann expr = withinLoop $ do
+  where loop ann expr = withinLoop $ do
                 setCurPos ann
                 f expr
 
-typeCheckExprF :: ExprF UntypedDec (TypeCheckM (Type, Expr TypedDec))
-               -> TypeCheckM (Type, Expr TypedDec)
+typeCheckExprF :: (MonadError Text m, MonadReader CheckContext m, MonadState CheckState m)
+               => ExprF UntypedDec (m (Type, Expr TypedDec))
+               -> m (Type, Expr TypedDec)
 typeCheckExprF = \case
     IntLit i -> return (TInt, mkIntLit i)
     StrLit s -> return (TString, mkStrLit s)
@@ -186,13 +186,20 @@ typeCheckExprF = \case
                 when (typ1 /= TInt) $ opError typ1
                 when (typ2 /= TInt) $ opError typ2
         return (TInt, mkBinop op e1 e2)
-      where eqne :: Type -> Type -> TypeCheckM ()
+      where eqne
+              :: (MonadError Text m, MonadReader CheckContext m, MonadState CheckState m)
+              => Type
+              -> Type
+              -> m ()
             eqne typ1 typ2 = when (isInvalidAssign typ1 typ2) $
                 prettyError $  "type mismatch in " <> showBinop op
                             <> " operation: trying to compare " <> showType typ1
                             <> " with " <> showType typ2
 
-            opError :: Type -> TypeCheckM ()
+            opError
+              :: (MonadError Text m, MonadReader CheckContext m, MonadState CheckState m)
+              => Type
+              -> m ()
             opError typ = prettyError $  "type mismatch in " <> showBinop op
                                       <> " operation: expected int but given "
                                       <> showType typ
@@ -323,8 +330,9 @@ typeCheckExprF = \case
         let retTyp = fst $ last es
         return (retTyp, mkSeq $ map snd es)
 
-typeCheckLvalF :: LValF UntypedDec (TypeCheckM (Type, Expr TypedDec))
-               -> TypeCheckM (Type, LValF TypedDec (Expr TypedDec))
+typeCheckLvalF :: (MonadError Text m, MonadReader CheckContext m, MonadState CheckState m)
+               => LValF UntypedDec (m (Type, Expr TypedDec))
+               -> m (Type, LValF TypedDec (Expr TypedDec))
 typeCheckLvalF = \case
     Var var -> do
         mtyp <- lookupVar var
@@ -355,8 +363,9 @@ typeCheckLvalF = \case
   where recordFieldIndices :: [RecordField a] -> [(Text, (a, Int))]
         recordFieldIndices = zipWith (\ind rf -> (rfName rf, (rfValue rf, ind))) [0..]
 
-typeCheckDecs :: [UntypedDec (TypeCheckM (Type, Expr TypedDec))]
-              -> TypeCheckM [TypedDec (Expr TypedDec)]
+typeCheckDecs :: (MonadError Text m, MonadReader CheckContext m, MonadState CheckState m)
+              => [UntypedDec (m (Type, Expr TypedDec))]
+              -> m [TypedDec (Expr TypedDec)]
 typeCheckDecs decs =
     mapAccumM typeCheckFirstPass ([],[]) decs >>= mapM typeCheckSecondPass
 
@@ -372,9 +381,10 @@ showVarInfo (Variable v) = "variable " <> v
 showVarInfo (Function f) = "function " <> f
 
 typeCheckFirstPass
-    :: ([VarInfo], [Text])
-    -> UntypedDec (TypeCheckM (Type, Expr TypedDec))
-    -> TypeCheckM (UntypedDec (TypeCheckM (Type, Expr TypedDec)), ([VarInfo], [Text]))
+    :: (MonadError Text m, MonadReader CheckContext m, MonadState CheckState m)
+    => ([VarInfo], [Text])
+    -> UntypedDec (m (Type, Expr TypedDec))
+    -> m (UntypedDec (m (Type, Expr TypedDec)), ([VarInfo], [Text]))
 typeCheckFirstPass (vars, types) = \case
     typDec@(UntypedTypeDec (UntypedType tid trv))
       | tid `elem` types  -> prettyError $ "redeclaration of type " <> tid
@@ -387,12 +397,7 @@ typeCheckFirstPass (vars, types) = \case
               Nothing ->
                   insertTypeAndReturn tid (TRecord tid $ map (fmap TName) fs)
       | TypeArray t <- trv -> insertTypeAndReturn tid (TArray (TName t))
-      where insertTypeAndReturn
-                :: Text
-                -> Type
-                -> TypeCheckM
-                    (UntypedDec (TypeCheckM (Type, Expr TypedDec)), ([VarInfo], [Text]))
-            insertTypeAndReturn tName typ = do
+      where insertTypeAndReturn tName typ = do
                 insertType tName typ
                 return (typDec, (vars, tName:types))
     varDec@(UntypedVarDec var)
@@ -410,8 +415,10 @@ typeCheckFirstPass (vars, types) = \case
           insertFun fn funTyp
           return (funDec, (Function fn:vars, types))
 
-typeCheckSecondPass :: UntypedDec (TypeCheckM (Type, Expr TypedDec))
-                    -> TypeCheckM (TypedDec (Expr TypedDec))
+typeCheckSecondPass
+    :: (MonadError Text m, MonadReader CheckContext m, MonadState CheckState m)
+    => UntypedDec (m (Type, Expr TypedDec))
+    -> m (TypedDec (Expr TypedDec))
 typeCheckSecondPass = \case
     UntypedTypeDec (UntypedType tid _) -> do
         typ <- lookupTypeErr tid
@@ -453,9 +460,15 @@ typeCheckSecondPass = \case
             return expr
         return (mkTypedFun fn typedArgs retTyp expr)
 
-resolveType :: Type -> TypeCheckM Type
+resolveType :: (MonadError Text m, MonadReader CheckContext m, MonadState CheckState m)
+            => Type
+            -> m Type
 resolveType = resolveType' []
-  where resolveType' :: [Text] -> Type -> TypeCheckM Type
+  where resolveType'
+            :: (MonadError Text m, MonadReader CheckContext m, MonadState CheckState m)
+            => [Text]
+            -> Type
+            -> m Type
         resolveType' visited = \case
             TArray t -> do
                 resTyp <- resolveType' [] t
