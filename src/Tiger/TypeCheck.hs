@@ -20,6 +20,7 @@ import Data.Text hiding ( length
                         , null
                         , filter
                         , find
+                        , elem
                         )
 import Data.Maybe (listToMaybe, mapMaybe, isNothing)
 import Data.Functor.Compose
