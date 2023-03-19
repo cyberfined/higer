@@ -1,0 +1,7 @@
+/* error: y is unitialized */
+let
+  type rec = {x: int, y: string}
+  var x := rec { x = 12 }
+in
+  0
+end

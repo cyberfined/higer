@@ -1,0 +1,6 @@
+/* error: field is duplicated within record type declaration */
+let
+  type rec = {x: int, y: string, x: rec}
+in
+  0
+end

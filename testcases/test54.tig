@@ -1,0 +1,5 @@
+/* error: break is outside the loop */
+let
+  var x := 12
+in break; x
+end

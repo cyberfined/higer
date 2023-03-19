@@ -330,6 +330,14 @@ fileCases = mkTestLabel "successful test cases"
     , successFile "testcases/test47.tig"
     , successFile "testcases/test48.tig"
     , failureFile "testcases/test49.tig"
+    , successFile "testcases/test50.tig"
+    , successFile "testcases/test51.tig"
+    , successFile "testcases/test52.tig"
+    , successFile "testcases/test53.tig"
+    , successFile "testcases/test54.tig"
+    , successFile "testcases/test55.tig"
+    , successFile "testcases/test56.tig"
+    , successFile "testcases/test57.tig"
     ]
 
 success :: Text -> EqExpr -> Assertion
@@ -343,11 +351,10 @@ success src exp = case parse "test.tig" src of
 failure :: Text -> Assertion
 failure src = case parse "test.tig" src of
     Left _     -> pure ()
-    Right expr -> assertFailure ( "unexpected success when parsing `"
+    Right expr -> assertFailure $ "unexpected success when parsing `"
                                 ++ Text.unpack src
                                 ++ "`\n"
                                 ++ show (EqExpr expr)
-                                )
 
 successFile :: FilePath -> Assertion
 successFile path = do

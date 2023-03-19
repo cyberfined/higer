@@ -1,0 +1,7 @@
+/* error: field is duplicated within record creation */
+let
+  type rec = {x: int, y: string}
+  var x := rec { x = 12, y = "Hello", y = "lol" }
+in
+  0
+end

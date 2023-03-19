@@ -1,6 +1,6 @@
 module Tiger.Parser (parse) where
 
-import           Control.Monad                  (replicateM, void, when, join)
+import           Control.Monad                  (replicateM, void, when)
 import           Control.Monad.Combinators.Expr (Operator (..), makeExprParser)
 import           Data.Char                      (chr, digitToInt, isAlpha, isAlphaNum,
                                                  isDigit, isPrint, toUpper)
@@ -82,19 +82,10 @@ expr =  makeExprParser term operators <?> "expression"
 
 idFactor :: Parser Expr
 idFactor = do
-    next <- join <$>
-        lookAhead (identifier *> optional
-            ((brackets anyButBracket *> optional anyLexeme) <|> Just <$> anyLexeme))
-    case next of
+    lookAhead (identifier *> optional anySingle) >>= \case
         Just '{' -> record
-        Just 'o' -> array
         Just '(' -> call
         _        -> lValue
-  where anyButBracket :: Parser ()
-        anyButBracket = void $ many $ satisfy (/= ']')
-
-        anyLexeme :: Parser Char
-        anyLexeme = lexeme $ anySingle
 
 nil :: Parser Expr
 nil = annotate (reserved NilWord $> Nil) <?> "nil"
@@ -103,9 +94,9 @@ integer :: Parser Expr
 integer = lexeme (annotate (IntLit <$> Lexer.decimal) <?> "integer")
 
 lValue :: Parser Expr
-lValue = do
-    lv <- parser <?> "l-value"
-    lookAhead (optional $ symbol ":=") >>= \case
+lValue = (parser <?> "l-value") >>= \case
+    Left array -> pure array
+    Right lv  -> lookAhead (optional $ symbol ":=") >>= \case
         Just{}  -> do
             void $ symbol ":="
             rv <- expr
@@ -114,14 +105,27 @@ lValue = do
             let span = Span from to
             pure $ Assign lv rv span
         Nothing -> pure $ LVal lv
-  where parser :: Parser LVal
+  where parser :: Parser (Either Expr LVal)
         parser = do
-            from <- getSourcePos
+            fromVar <- getSourcePos
             varName <- identifier
-            to <- getSourcePos
-            let var = Var varName (Span from to)
-            lvalue' var from
-
+            toVar <- getSourcePos
+            let var = Var varName (Span fromVar toVar)
+            lookAhead (optional anySingle) >>= \case
+                Just '[' -> do
+                    indexExpr <- brackets expr
+                    lookAhead (optional anySingle) >>= \case
+                        Just 'o' -> do
+                            reserved OfWord
+                            sizeExpr <- expr
+                            toArray <- getSourcePos
+                            let arraySpan = Span fromVar toArray
+                            pure $ Left $ Array varName indexExpr sizeExpr arraySpan
+                        _ -> do
+                            toIndex <- getSourcePos
+                            let index = Index var indexExpr (Span fromVar toIndex)
+                            Right <$> lvalue' index fromVar
+                _ -> Right <$> lvalue' var fromVar
         lvalue' :: LVal -> Position -> Parser LVal
         lvalue' varOrIndex from = do
             lookAhead (optional anySingle) >>= \case
@@ -240,15 +244,6 @@ call = annotate
   <?> "call"
   )
 
-array :: Parser Expr
-array = annotate
-  (   Array
-  <$> identifier
-  <*> brackets expr
-  <*> (reserved OfWord *> expr)
-  <?> "array"
-  )
-
 if' :: Parser Expr
 if' = annotate
   (   If
@@ -362,7 +357,7 @@ data ReservedWord
     | ForWord
     | ToWord
     | BreakWord
-    deriving (Bounded, Enum)
+    deriving stock (Bounded, Enum)
 
 reserved :: ReservedWord -> Parser ()
 reserved = void . symbol . reservedWordToText

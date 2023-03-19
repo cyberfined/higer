@@ -1,0 +1,11 @@
+/* error : different array types comparison */
+
+let
+	type arrtype1 = array of int
+	type arrtype2 = array of int
+
+	var arr1 := arrtype1 [10] of 0
+	var arr2 := arrtype2 [10] of 0
+in
+	arr1 = arr2
+end
