@@ -41,6 +41,7 @@ module Common
     , funDecs
     , funDec
     , decField
+    , recField
     , mkTestLabel
     ) where
 
@@ -162,8 +163,8 @@ newtype EqTypeDecBody = EqTypeDecBody TypeDecBody
 instance Eq EqTypeDecBody where
     EqTypeDecBody b1 == EqTypeDecBody b2 = case (b1, b2) of
         (TypeAlias t1 _, TypeAlias t2 _)     -> t1 == t2
-        (RecordType ds1 _, RecordType ds2 _) -> (EqDecField <$> ds1)
-                                             == (EqDecField <$> ds2)
+        (RecordType ds1 _, RecordType ds2 _) -> (EqRecordField <$> ds1)
+                                             == (EqRecordField <$> ds2)
         (ArrayType t1 _, ArrayType t2 _)     -> t1 == t2
         _                                    -> False
 
@@ -172,6 +173,12 @@ newtype EqDecField = EqDecField DecField
 instance Eq EqDecField where
     EqDecField (DecField n1 e1 t1 _) == EqDecField (DecField n2 e2 t2 _) =
         n1 == n2 && EqEscaping e1 == EqEscaping e2 && t1 == t2
+
+newtype EqRecordField = EqRecordField RecordField
+
+instance Eq EqRecordField where
+    EqRecordField (RecordField n1 t1 _) == EqRecordField (RecordField n2 t2 _) =
+        n1 == n2 && t1 == t2
 
 newtype EqFunDec = EqFunDec FunDec
 
@@ -271,7 +278,7 @@ typeDecs = TypeDecs . NonEmpty.fromList
 typeAlias :: Text -> Text -> TypeDec
 typeAlias n a = TypeDec n (TypeAlias a span) span
 
-recordType :: Text -> [DecField] -> TypeDec
+recordType :: Text -> [RecordField] -> TypeDec
 recordType n fs = TypeDec n (RecordType fs span) span
 
 arrayType :: Text -> Text -> TypeDec
@@ -288,6 +295,9 @@ funDec n as t (EqExpr e) = FunDec n as t e span
 
 decField :: Text -> Escaping -> Text -> DecField
 decField n e t = DecField n e t span
+
+recField :: Text -> Text -> RecordField
+recField n t = RecordField n t span
 
 mkTestLabel :: String -> [Assertion] -> Test
 mkTestLabel lbl = TestLabel lbl . TestList . map TestCase

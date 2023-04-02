@@ -1,10 +1,11 @@
 module Main (main) where
 
-import Tiger.Expr
-import Tiger.Parser (parse)
-import Tiger.Semant (semantAnalyze, posedExceptionToText)
+import           Tiger.EscapeAnalysis (escapeAnalyze)
+import           Tiger.Expr           (exprToText)
+import           Tiger.Parser         (parse)
+import           Tiger.Semant         (posedExceptionToText, semantAnalyze)
 
-import qualified Data.Text.IO as TIO
+import qualified Data.Text.IO         as TIO
 
 main :: IO ()
 main = do
@@ -12,7 +13,8 @@ main = do
     case parse "test.tig" src of
         Left err   -> TIO.putStr err
         Right expr -> do
-            TIO.putStr $ exprToText expr
-            semantAnalyze "test.tig" expr >>= \case
+            escExpr <- escapeAnalyze expr
+            TIO.putStr $ exprToText escExpr
+            semantAnalyze "test.tig" escExpr >>= \case
                 Left err -> TIO.putStrLn (posedExceptionToText err)
                 Right () -> TIO.putStrLn "Type check was successful"

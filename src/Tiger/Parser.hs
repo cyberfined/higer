@@ -298,9 +298,17 @@ typeDecs = TypeDecs <$> some typeDec
         typeBody :: Parser TypeDecBody
         typeBody = annotate
           (   (reserved ArrayWord *> reserved OfWord *> (ArrayType <$> identifier))
-          <|> (RecordType <$> braces decFields)
+          <|> (RecordType <$> braces recFields)
           <|> (TypeAlias <$> identifier)
           )
+
+        recFields :: Parser [RecordField]
+        recFields = sepBy recField $ symbol ","
+          where recField = annotate
+                  (   RecordField
+                  <$> identifier
+                  <*> (symbol ":" *> identifier)
+                  )
 
 varDec :: Parser Dec
 varDec = annotate $ do
@@ -329,15 +337,14 @@ funDecs = FunDecs <$> some funDec
           <*> (symbol "=" *> expr)
           <?> "function declaration"
           )
-
-decFields :: Parser [DecField]
-decFields = sepBy decField $ symbol ","
-  where decField = annotate
-          (   DecField
-          <$> identifier
-          <*> pure Remaining
-          <*> (symbol ":" *> identifier)
-          )
+        decFields :: Parser [DecField]
+        decFields = sepBy decField $ symbol ","
+          where decField = annotate
+                  (   DecField
+                  <$> identifier
+                  <*> pure Remaining
+                  <*> (symbol ":" *> identifier)
+                  )
 
 data ReservedWord
     = TypeWord

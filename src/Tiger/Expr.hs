@@ -4,6 +4,7 @@ module Tiger.Expr
     , TypeDecBody(..)
     , FunDec(..)
     , DecField(..)
+    , RecordField(..)
     , Expr(..)
     , LVal(..)
     , Escaping(..)
@@ -40,7 +41,7 @@ data TypeDec = TypeDec
 
 data TypeDecBody
     = TypeAlias !Text !Span
-    | RecordType ![DecField] !Span
+    | RecordType ![RecordField] !Span
     | ArrayType !Text !Span
 
 data FunDec = FunDec
@@ -56,6 +57,12 @@ data DecField = DecField
     , decFieldEscape :: !Escaping
     , decFieldType   :: !Text
     , decFieldSpan   :: !Span
+    }
+
+data RecordField = RecordField
+    { recFieldName :: !Text
+    , recFieldType :: !Text
+    , recFieldSpan :: !Span
     }
 
 data Expr
@@ -186,7 +193,7 @@ exprToText e = exprToText' e "" ""
         typeBodyToText :: TypeDecBody -> Text -> Text -> Text
         typeBodyToText = \case
             TypeAlias typ _ -> showLeaf typ
-            RecordType fs _ -> showLeaf $ "{" <> showDecFields fs <> "}"
+            RecordType fs _ -> showLeaf $ "{" <> showRecFields fs <> "}"
             ArrayType typ _ -> showLeaf $ typ <> "[]"
 
         funDecToText :: FunDec -> Text -> Text -> Text
@@ -199,6 +206,10 @@ exprToText e = exprToText' e "" ""
         showDecFields = Text.intercalate ", " . map showDecField
             where showDecField DecField{..} =  decFieldName <> " : " <> decFieldType
                                             <> escapingToText decFieldEscape
+
+        showRecFields :: [RecordField] -> Text
+        showRecFields = Text.intercalate ", " . map showRecField
+          where showRecField RecordField{..} =  recFieldName <> " : " <> recFieldType
 
         binopToText :: Binop -> Text
         binopToText = \case

@@ -218,7 +218,7 @@ letTests = mkTestLabel "let expression tests"
     , success "let\n  type kek = string\n  type lol = { rofl: kek }\n\
               \  var i := lol { rofl = \"hello\\n\" }\nin i\nend" $
         let' [ typeDecs [ typeAlias "kek" "string"
-                        , recordType "lol" [decField "rofl" rem "kek"]
+                        , recordType "lol" [recField "rofl" "kek"]
                         ]
              , varDec "i" Nothing rem $ record "lol" [field "rofl" $ str "hello\n"]
              ]

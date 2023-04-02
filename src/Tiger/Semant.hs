@@ -383,13 +383,13 @@ transDec = \case
                 insertType typeName typ
                 writeTypeRef ref typ
             RecordType fields _ -> do
-                let typeCheckField (res, seen) DecField{..}
-                      | decFieldName `elem` seen
-                      = throwErrorPos (DuplicatedRecordField decFieldName) decFieldSpan
+                let typeCheckField (res, seen) RecordField{..}
+                      | recFieldName `elem` seen
+                      = throwErrorPos (DuplicatedRecordField recFieldName) recFieldSpan
                       | otherwise = do
-                          setSpan decFieldSpan
-                          typ <- getType decFieldType
-                          pure ((decFieldName, typ):res, decFieldName:seen)
+                          setSpan recFieldSpan
+                          typ <- getType recFieldType
+                          pure ((recFieldName, typ):res, recFieldName:seen)
                 typedFields <- reverse . fst <$> foldM typeCheckField ([], []) fields
                 typ <- TRecord typeName typedFields <$> newUnique
                 insertType typeName typ

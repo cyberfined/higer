@@ -22,7 +22,8 @@ source-repository head
 
 library
   exposed-modules:
-      Tiger.Expr
+      Tiger.EscapeAnalysis
+    , Tiger.Expr
     , Tiger.Parser
     , Tiger.Semant
   hs-source-dirs:
@@ -63,6 +64,7 @@ test-suite tests
   main-is: Tests.hs
   other-modules:
       Common
+    , EscapeAnalysisTests
     , ParserTests
     , SemantTests
   hs-source-dirs:
