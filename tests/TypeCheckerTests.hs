@@ -1,5 +1,8 @@
-module SemantTests (tests) where
+{-# LANGUAGE TypeApplications #-}
 
+module TypeCheckerTests (tests) where
+
+import           Common
 import           Data.Text    (Text)
 import           Test.HUnit   hiding (path)
 import           Tiger.Expr   (Expr)
@@ -8,13 +11,13 @@ import           Tiger.Semant (PosedSemantException (..), SemantException (..), 
                                Unique (..), exceptionToText, posedExceptionToText,
                                semantAnalyze)
 
-import           Common
-
 import qualified Data.Text    as Text
 import qualified Data.Text.IO as Text
 
+import qualified Tiger.Amd64  as Amd64
+
 tests :: Test
-tests = mkTestLabel "semant analyzer tests"
+tests = mkTestLabel "type checker tests"
     [ successFile "testcases/test1.tig"
     , successFile "testcases/test2.tig"
     , successFile "testcases/test3.tig"
@@ -164,6 +167,6 @@ runSemantAnalyzer path = do
                                   ++ path
                                   ++ ":`\n"
                                   ++ Text.unpack err
-        Right expr -> semantAnalyze path expr >>= \case
+        Right expr -> semantAnalyze @Amd64.Frame path expr >>= \case
             Left err -> pure (Left err)
-            Right () -> pure (Right expr)
+            Right _  -> pure (Right expr)
