@@ -6,12 +6,14 @@ module Tiger.Frame
 
 import           Control.Monad.IO.Class     (MonadIO)
 import           Data.Proxy                 (Proxy)
+import           Data.Text                  (Text)
 import           Data.Text.Lazy.Builder     (Builder, singleton)
 import           Data.Text.Lazy.Builder.Int (decimal)
 
 import           Tiger.Expr                 (Escaping (..))
-import           Tiger.IR.Types             (ExternalFun, IR, Operand, Stmt)
+import           Tiger.IR.Types             (IR, Operand, Stmt)
 import           Tiger.Temp                 (Label, MonadTemp, Temp, tempBuilder)
+
 
 data Access
     = InReg !Temp
@@ -30,4 +32,4 @@ class Frame a where
     wordSize :: Proxy a -> Int
     accessToIR :: MonadTemp m => a -> Access -> IR Operand -> m ([IR Stmt], Temp)
     procEntryExit :: a -> ([IR Stmt], [IR Stmt])
-    externalCall :: Proxy a -> Maybe Temp -> ExternalFun -> [IR Operand] -> IR Stmt
+    externalCall :: Proxy a -> Maybe Temp -> Text -> [IR Operand] -> IR Stmt

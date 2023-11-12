@@ -7,8 +7,6 @@ module Tiger.IR.Types
     , IRData(..)
     , LabeledString(..)
     , IRFunction(..)
-    , ExternalFun(..)
-    , externalFunLabel
     ) where
 
 import           Data.Text  (Text)
@@ -75,12 +73,3 @@ data Relop
     | ULe
     | UGt
     | UGe
-
-data ExternalFun
-    = StringEqual
-    | CreateArray
-
-externalFunLabel :: ExternalFun -> Temp.Label
-externalFunLabel = Temp.LabelText . \case
-    StringEqual -> "stringEqual"
-    CreateArray -> "createArray"
