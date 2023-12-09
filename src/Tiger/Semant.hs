@@ -19,10 +19,13 @@ import           Data.IORef                 (IORef, modifyIORef', newIORef, read
 import           Data.List                  (delete)
 import           Data.Proxy                 (Proxy (..))
 import           Data.Text                  (Text)
+import           Data.Vector.Hashtables     (Dictionary, PrimMonad (PrimState))
 import           Prelude                    hiding (exp, span)
 
 
 
+import           Tiger.EscapeAnalysis       (EscapeAnalysisResult,
+                                             getEscapeAnalysisResult)
 import           Tiger.Expr
 import           Tiger.Frame                hiding (Access (..), accessToIR, allocLocal)
 import           Tiger.IR                   (IR, IRData (..), IRFunction (..),
@@ -35,9 +38,11 @@ import qualified Data.Text                  as Text
 import qualified Data.Text.Lazy             as LazyText
 import qualified Data.Text.Lazy.Builder     as Builder
 import qualified Data.Text.Lazy.Builder.Int as Builder
+import qualified Data.Vector.Hashtables     as HashTable
+import qualified Data.Vector.Mutable        as MVec
 
 import qualified Tiger.Frame                as Frame
-import qualified Tiger.IR                   as IR
+import qualified Tiger.IR.Types             as IR
 
 data Type
     = TInt
@@ -85,6 +90,8 @@ instance Frame f => Eq (Level f) where
 
 data Access f = Access !(Level f) !Frame.Access
 
+type HashTable k v = Dictionary (PrimState IO) MVec.MVector k MVec.MVector v
+
 newtype SemantM f a = SemantM { runSemantM :: ReaderT (Context f) IO a }
     deriving newtype (Functor, Applicative, Monad, MonadReader (Context f), MonadIO)
 
@@ -96,24 +103,26 @@ data Context f = Context
     , ctxSpan               :: !(IORef Span)
     , ctxLoopEndLabel       :: !(IORef (Maybe Label))
     , ctxCurrentLevel       :: !(IORef (Level f))
-    , ctxStrings            :: !(IORef (HashMap Text Label))
+    , ctxStrings            :: !(HashTable Text Label)
     , ctxIRFunctions        :: !(IORef [IRFunction f])
     , ctxCurrentIRFunctions :: !(IORef [IRFunction f])
+    , ctxLabelReplacements  :: !(HashTable Label Label)
     }
 
 data EnvEntry f
     = VarEntry !(VarInfo f)
-    | FunEntry !FunInfo
+    | FunEntry !(FunInfo f)
 
 data VarInfo f = VarInfo
     { varInfoType   :: !Type
     , varInfoAccess :: !(Access f)
     }
 
-data FunInfo = FunInfo
+data FunInfo f = FunInfo
     { funInfoArgs  :: ![Type]
     , funInfoRet   :: !Type
     , funInfoLabel :: !Label
+    , funInfoLevel :: (Level f)
     }
 
 data SemantException
@@ -186,29 +195,36 @@ instance Frame f => MonadTemp (SemantM f) where
         pure (Temp t)
 
 class (Frame f, MonadTemp (m f)) => MonadSemant m f where
-    newUnique       :: m f Unique
-    newTypeRef      :: m f TypeRef
-    readTypeRef     :: TypeRef -> m f (Maybe Type)
-    writeTypeRef    :: TypeRef -> Type -> m f ()
-    withNewEnv      :: m f a -> m f a
-    initMainFrame   :: m f ()
-    newFuncLabel    :: Text -> m f Label
-    emitLabel       :: m f Label
-    withNewFrame    :: Label -> [Escaping] -> ([Access f] -> m f a) -> m f a
-    allocLocal      :: Escaping -> m f (Access f)
-    insertVarType   :: Text -> (EnvEntry f) -> m f ()
-    insertType      :: Text -> Type -> m f ()
-    getVarInfo      :: Text -> m f (VarInfo f)
-    getFunInfo      :: Text -> m f FunInfo
-    getType         :: Text -> m f Type
-    withLoop        :: Label -> m f a -> m f a
-    getLoopEndLabel :: m f (Maybe Label)
-    setSpan         :: Span -> m f ()
-    getStringLabel  :: Text -> m f Label
-    emitIR          :: IR Stmt -> m f ()
-    accessToIR      :: Access f -> m f Temp
-    getCurrentFrame :: m f f
-    throwError      :: SemantException -> m f a
+    newUnique             :: m f Unique
+    newTypeRef            :: m f TypeRef
+    readTypeRef           :: TypeRef -> m f (Maybe Type)
+    writeTypeRef          :: TypeRef -> Type -> m f ()
+    withNewEnv            :: m f a -> m f a
+    initMainFrame         :: m f ()
+    newFuncLabel          :: Text -> m f Label
+    emitLabel             :: Label -> m f ()
+    emitJump              :: Label -> m f ()
+    emitCJump             :: IR.Relop
+                          -> IR Operand
+                          -> IR Operand
+                          -> Label
+                          -> Label
+                          -> m f ()
+    withNewFrame          :: Label -> [Escaping] -> ([Access f] -> m f a) -> m f a
+    allocLocal            :: Escaping -> m f (Access f)
+    insertVarType         :: Text -> (EnvEntry f) -> m f ()
+    insertType            :: Text -> Type -> m f ()
+    getVarInfo            :: Text -> m f (VarInfo f)
+    getFunInfo            :: Text -> m f (FunInfo f)
+    getType               :: Text -> m f Type
+    withLoop              :: Label -> m f a -> m f a
+    getLoopEndLabel       :: m f (Maybe Label)
+    setSpan               :: Span -> m f ()
+    getStringLabel        :: Text -> m f Label
+    emitIR                :: IR Stmt -> m f ()
+    accessToIR            :: Access f -> m f Temp
+    getCurrentLevel       :: m f (Level f)
+    throwError            :: SemantException -> m f a
 
 instance Frame f => MonadSemant SemantM f where
     newUnique = do
@@ -236,11 +252,15 @@ instance Frame f => MonadSemant SemantM f where
                         Builder.toLazyText $
                         Builder.fromText funName <> "_" <> Builder.decimal l
         pure (LabelText labelName)
-    emitLabel = do
+    emitLabel lab = do
         IRFunction{..} <- head <$> (asks ctxCurrentIRFunctions >>= liftIO . readIORef)
         case irFuncBody of
-            (IR.Label l:_) -> pure l
-            _              -> newLabel >>= \l -> emitIR (IR.Label l) $> l
+            (IR.Label l:_) -> do
+                labelReplacements <- asks ctxLabelReplacements
+                liftIO $ HashTable.insert labelReplacements lab l
+            _ -> emitIR (IR.Label lab)
+    emitJump = emitJumpStmt . IR.Jump
+    emitCJump op op1 op2 tLab fLab = emitJumpStmt (IR.CJump op op1 op2 tLab fLab)
     withNewFrame label args f = do
         frame <- newFrame @f label (Escaping : args)
         currentLevelRef <- asks ctxCurrentLevel
@@ -315,12 +335,12 @@ instance Frame f => MonadSemant SemantM f where
     getLoopEndLabel = asks ctxLoopEndLabel >>= liftIO . readIORef
     setSpan s = asks ctxSpan >>= \spanRef -> liftIO $ writeIORef spanRef s
     getStringLabel str = do
-        stringsRef <- asks ctxStrings
-        HashMap.lookup str <$> liftIO (readIORef stringsRef) >>= \case
+        stringsMap <- asks ctxStrings
+        liftIO (HashTable.lookup stringsMap str) >>= \case
             Just label -> pure label
             _ -> do
                 label <- newLabel
-                liftIO $ modifyIORef' stringsRef (HashMap.insert str label)
+                liftIO $ HashTable.insert stringsMap str label
                 pure label
     emitIR ir = do
         irFunctionsRef <- asks ctxCurrentIRFunctions
@@ -329,24 +349,37 @@ instance Frame f => MonadSemant SemantM f where
         liftIO $ modifyIORef' irFunctionsRef insertIr
     accessToIR (Access level@(Level _ _ frame) access) = do
         curLevel <- asks ctxCurrentLevel >>= liftIO . readIORef
-        fp <- followStaticLinks (IR.Temp FP) curLevel
+        fp <- followStaticLinks (IR.Temp FP) level curLevel
         (stmts, op) <- Frame.accessToIR frame access fp
         mapM_ emitIR stmts
         pure op
-      where followStaticLinks fp innerLevel@(Level _ mParentLevel innerFrame)
-              | innerLevel == level = pure fp
-              | otherwise = do
-                  stLink <- getStaticLink innerFrame
-                  case mParentLevel of
-                      Nothing          -> error "level does not have a parent"
-                      Just parentLevel -> followStaticLinks stLink parentLevel
-    getCurrentFrame =  irFuncFrame . head
-                   <$> (asks ctxCurrentIRFunctions >>= liftIO . readIORef)
+    getCurrentLevel = asks ctxCurrentLevel >>= liftIO . readIORef
     throwError = liftIO . throwIO
 
-getStaticLink :: (Frame f, MonadSemant m f) => f -> m f (IR Operand)
-getStaticLink frame = do
-    (stmts, op) <- Frame.accessToIR frame stLinkAccess (IR.Temp FP)
+followStaticLinks :: (MonadSemant m f, Frame f)
+                  => IR Operand
+                  -> Level f
+                  -> Level f
+                  -> m f (IR Operand)
+followStaticLinks fp level innerLevel@(Level _ mParentLevel innerFrame)
+  | innerLevel == level = pure fp
+  | otherwise = do
+      stLink <- getStaticLink innerFrame fp
+      case mParentLevel of
+          Nothing          -> error "level does not have a parent"
+          Just parentLevel -> followStaticLinks stLink level parentLevel
+
+emitJumpStmt :: Frame f => IR Stmt -> SemantM f ()
+emitJumpStmt stmt = do
+    IRFunction{..} <- head <$> (asks ctxCurrentIRFunctions >>= liftIO . readIORef)
+    case irFuncBody of
+        (IR.Jump{}:_)  -> pure ()
+        (IR.CJump{}:_) -> pure ()
+        _              -> emitIR stmt
+
+getStaticLink :: (Frame f, MonadSemant m f) => f -> IR Operand -> m f (IR Operand)
+getStaticLink frame frameAddress = do
+    (stmts, op) <- Frame.accessToIR frame stLinkAccess frameAddress
     mapM_ emitIR stmts
     stLink <- newTemp
     emitIR (IR.Load stLink (IR.Temp op))
@@ -355,7 +388,7 @@ getStaticLink frame = do
 
 semantAnalyze :: forall f. Frame f
               => FilePath
-              -> Expr
+              -> EscapeAnalysisResult
               -> IO (Either PosedSemantException (IRData f))
 semantAnalyze file expr = do
     uniqueRef <- newIORef (Unique 0)
@@ -365,9 +398,10 @@ semantAnalyze file expr = do
     spanRef <- newIORef (Span (Position 0 0) (Position 0 0))
     loopEndLabelRef <- newIORef Nothing
     currentLevelRef <- newIORef undefined
-    stringsRef <- newIORef HashMap.empty
+    stringsMap <- HashTable.initialize 64
     irFunctionsRef <- newIORef []
     currentIRFunctionsRef <- newIORef []
+    labelReplacements <- HashTable.initialize 16
     let ctx = Context { ctxUnique             = uniqueRef
                       , ctxNextTemp           = nextTempRef
                       , ctxNextLabel          = nextLabelRef
@@ -375,11 +409,14 @@ semantAnalyze file expr = do
                       , ctxSpan               = spanRef
                       , ctxLoopEndLabel       = loopEndLabelRef
                       , ctxCurrentLevel       = currentLevelRef
-                      , ctxStrings            = stringsRef
+                      , ctxStrings            = stringsMap
                       , ctxIRFunctions        = irFunctionsRef
                       , ctxCurrentIRFunctions = currentIRFunctionsRef
+                      , ctxLabelReplacements  = labelReplacements
                       }
-    let transMain = initMainFrame >> transExpr expr >> emitIR (IR.Ret Nothing)
+    let transMain =  initMainFrame
+                  >> transExpr (getEscapeAnalysisResult expr)
+                  >> emitIR (IR.Ret Nothing)
         eval :: IO (Either SemantException ())
         eval = try (runReaderT (runSemantM transMain) ctx)
     eval >>= \case
@@ -387,21 +424,35 @@ semantAnalyze file expr = do
             span <- readIORef spanRef
             pure (Left $ PosedSemantException file err span)
         Right{}  -> do
-            let toLabeledString k v a = LabeledString k v : a
-            strings <- HashMap.foldrWithKey' toLabeledString [] <$> readIORef stringsRef
+            strings <- map (uncurry LabeledString) <$> HashTable.toList stringsMap
             readIORef currentIRFunctionsRef >>= \case
                 (f@IRFunction{..}:_) ->
                     modifyIORef' irFunctionsRef (f { irFuncBody = reverse irFuncBody } :)
                 _     -> pure ()
             irFunctions <- readIORef irFunctionsRef
+            backpatchedFunctions <- forM irFunctions $ \func@IRFunction{..} -> do
+                backpatchedBody <- backpatchLabels labelReplacements irFuncBody
+                pure $ func { irFuncBody = backpatchedBody }
+
             pure $ Right $ IRData { resStrings   = strings
-                                  , resFunctions = irFunctions
+                                  , resFunctions = backpatchedFunctions
                                   }
   where initTypes = HashMap.fromList [("int", TInt), ("string", TString)]
 
+backpatchLabels :: HashTable Label Label -> [IR Stmt] -> IO [IR Stmt]
+backpatchLabels labelReplacements stmts = forM stmts $ \case
+    IR.Jump lab                   -> IR.Jump <$> getLabelReplacement lab
+    IR.CJump op op1 op2 tLab fLab ->  IR.CJump op op1 op2
+                                  <$> getLabelReplacement tLab
+                                  <*> getLabelReplacement fLab
+    stmt                          -> pure stmt
+  where getLabelReplacement lab = HashTable.lookup labelReplacements lab >>= \case
+            Just repl -> pure repl
+            Nothing   -> pure lab
+
 libFunctions :: Frame f => HashMap Text (EnvEntry f)
 libFunctions = HashMap.fromList $
-    map (\(n, c) -> (n, FunEntry $ c (LabelText n)))
+    map (\(n, c) -> (n, FunEntry $ c (LabelText n) undefined))
         [ ("print", FunInfo [TString] TUnit)
         , ("flush", FunInfo [] TUnit)
         , ("getchar", FunInfo [] TString)
@@ -488,8 +539,7 @@ transExpr expr = do
         If cond th mel _ -> do
             (tLab, fLab) <- (,) <$> newLabel <*> newLabel
             transExprCond tLab fLab cond
-
-            emitIR (IR.Label tLab)
+            emitLabel tLab
             case mel of
                 Just el -> do
                     resLab <- newLabel
@@ -501,12 +551,12 @@ transExpr expr = do
                                    t <- newTemp
                                    emitIR (IR.Assign t thOp)
                                    pure $ Just t
-                    emitIR (IR.Jump resLab)
-                    emitIR (IR.Label fLab)
+                    emitJump resLab
+                    emitLabel fLab
                     (elType', elOp) <- transExpr el
                     elType <- actualType elType'
                     maybe (pure ()) (\t -> emitIR (IR.Assign t elOp)) mRes
-                    emitIR (IR.Label resLab)
+                    emitLabel resLab
                     unless (isTypesMatch thType elType) $
                         throwError (TypeMismatch thType elType)
                     let resOp = maybe (IR.Const 0) IR.Temp mRes
@@ -515,17 +565,18 @@ transExpr expr = do
                         _              -> pure (thType, resOp)
                 Nothing -> do
                     checkUnit th
-                    emitIR (IR.Label fLab)
+                    emitLabel fLab
                     pure (TUnit, IR.Const 0)
         While cond body _ ->  do
-            begLab <- emitLabel
+            begLab <- newLabel
+            emitLabel begLab
             (tLab, fLab) <- (,) <$> newLabel <*> newLabel
             withLoop fLab $ do
                 transExprCond tLab fLab cond
-                emitIR (IR.Label tLab)
+                emitLabel tLab
                 checkUnit body
-                emitIR (IR.Jump begLab)
-                emitIR (IR.Label fLab)
+                emitJump begLab
+                emitLabel fLab
                 pure (TUnit, IR.Const 0)
         For var esc startExpr endExpr body _ -> do
             fromOp <- checkInt startExpr
@@ -538,19 +589,25 @@ transExpr expr = do
                 varOp <- accessToIR access
                 let loc = accessToLocation access
                 assign varOp fromOp loc
-                emitIR (IR.Label begLab)
+                emitLabel begLab
                 valOp <- getVarValue varOp loc
-                emitIR (IR.CJump IR.Le (IR.Temp valOp) toOp tLab fLab)
-                emitIR (IR.Label tLab)
+                emitCJump IR.Le (IR.Temp valOp) toOp tLab fLab
+                emitLabel tLab
                 checkUnit body
-                emitIR (IR.Binop valOp IR.Add (IR.Temp valOp) (IR.Const 1))
+
+                -- If variable escapes, procedure can change it's value,
+                -- so we must load current value again before increment
+                nextValOp <- if esc == Escaping
+                             then getVarValue varOp loc
+                             else pure valOp
+                emitIR (IR.Binop valOp IR.Add (IR.Temp nextValOp) (IR.Const 1))
                 assign varOp (IR.Temp valOp) loc
-                emitIR (IR.Jump begLab)
-                emitIR (IR.Label fLab)
+                emitJump begLab
+                emitLabel fLab
             pure (TUnit, undefined)
         Break _ -> getLoopEndLabel >>= \case
             Nothing           -> throwError BreakOutsideLoop
-            Just loopEndLabel -> emitIR (IR.Jump loopEndLabel) $> (TUnit, IR.Const 0)
+            Just loopEndLabel -> emitJump loopEndLabel $> (TUnit, IR.Const 0)
         Seq es _ -> foldM (\_ e -> transExpr e) (TUnit, IR.Const 0) es
         Call funName args _ -> getFunInfo funName >>= \case
             FunInfo{..}
@@ -563,14 +620,17 @@ transExpr expr = do
                                         (exprSpan arg)
                       pure argOp
                   mDst <- if funInfoRet == TUnit then pure Nothing else Just <$> newTemp
-                  frame <- getCurrentFrame
+                  curLevel@(Level _ _ frame) <- getCurrentLevel
 
                   if HashMap.member funName (libFunctions @f)
                   then emitIR (Frame.externalCall (Proxy @f) mDst funName argOps)
                   else do
+                      let fp = IR.Temp FP
                       argOps' <- if Frame.frameName frame == funInfoLabel
-                                 then (:) <$> getStaticLink frame <*> pure argOps
-                                 else pure (IR.Temp FP : argOps)
+                                 then (:) <$> getStaticLink frame fp <*> pure argOps
+                                 else do
+                                     stLink <- followStaticLinks fp funInfoLevel curLevel
+                                     pure (stLink : argOps)
                       emitIR (IR.Call mDst funInfoLabel argOps')
 
                   let retOp = maybe (IR.Const 0) IR.Temp mDst
@@ -612,40 +672,40 @@ transBinop op e1 e2 = case op of
         resLab <- newLabel
         res <- newTemp
         transExprCond t1Lab fLab e1
-        emitIR (IR.Label t1Lab)
+        emitLabel t1Lab
         transExprCond t2Lab fLab e2
-        emitIR (IR.Label t2Lab)
+        emitLabel t2Lab
         emitIR (IR.Assign res (IR.Const 1))
-        emitIR (IR.Jump resLab)
-        emitIR (IR.Label fLab)
+        emitJump resLab
+        emitLabel fLab
         emitIR (IR.Assign res (IR.Const 0))
-        emitIR (IR.Label resLab)
+        emitLabel resLab
         pure (IR.Temp res)
     Or  -> do
         (f1Lab, f2Lab, tLab) <- (,,) <$> newLabel <*> newLabel <*> newLabel
         resLab <- newLabel
         res <- newTemp
         transExprCond tLab f1Lab e1
-        emitIR (IR.Label f1Lab)
+        emitLabel f1Lab
         transExprCond tLab f2Lab e2
-        emitIR (IR.Label f2Lab)
+        emitLabel f2Lab
         emitIR (IR.Assign res (IR.Const 0))
-        emitIR (IR.Jump resLab)
-        emitIR (IR.Label tLab)
+        emitJump resLab
+        emitLabel tLab
         emitIR (IR.Assign res (IR.Const 1))
-        emitIR (IR.Label resLab)
+        emitLabel resLab
         pure (IR.Temp res)
   where transRelopExpr :: MonadSemant m f => IR.Relop -> m f (IR Operand)
         transRelopExpr irOp = do
             (tLab, fLab, resLab) <- (,,) <$> newLabel <*> newLabel <*> newLabel
             transRelop tLab fLab irOp e1 e2
             res <- newTemp
-            emitIR (IR.Label fLab)
+            emitLabel fLab
             emitIR (IR.Assign res (IR.Const 0))
-            emitIR (IR.Jump resLab)
-            emitIR (IR.Label tLab)
+            emitJump resLab
+            emitLabel tLab
             emitIR (IR.Assign res (IR.Const 1))
-            emitIR (IR.Label resLab)
+            emitLabel resLab
             pure (IR.Temp res)
 
 transExprCond :: MonadSemant m f => Label -> Label -> Expr -> m f ()
@@ -664,15 +724,15 @@ transExprCond tLab fLab = \case
         And -> do
             t2Lab <- newLabel
             transExprCond t2Lab fLab e1
-            emitIR (IR.Label t2Lab)
+            emitLabel t2Lab
             transExprCond tLab fLab e2
         Or  -> do
             f2Lab <- newLabel
             transExprCond tLab f2Lab e1
-            emitIR (IR.Label f2Lab)
+            emitLabel f2Lab
             transExprCond tLab fLab e2
     expr -> checkInt expr >>= opToCond
-  where opToCond op = emitIR (IR.CJump IR.Eq op (IR.Const 1) tLab fLab)
+  where opToCond op = emitCJump IR.Ne op (IR.Const 0) tLab fLab
 
 transRelop :: forall m f. MonadSemant m f
            => Label
@@ -687,7 +747,7 @@ transRelop tLab fLab op e1 e2 = case op of
     _     -> do
         op1 <- checkInt e1
         op2 <- checkInt e2
-        emitIR (IR.CJump op op1 op2 tLab fLab)
+        emitCJump op op1 op2 tLab fLab
   where transEq = do
             (e1Type, op1) <- transExpr e1
             (e2Type, op2) <- transExpr e2
@@ -698,12 +758,12 @@ transRelop tLab fLab op e1 e2 = case op of
             unless (isTypesMatch e1Type e2Type) $
                 throwErrorPos (TypeMismatch e1Type e2Type) (exprSpan e2)
             if e1Type /= TString
-               then emitIR (IR.CJump op op1 op2 tLab fLab)
+               then emitCJump op op1 op2 tLab fLab
                else do
                    res <- newTemp
                    emitIR $ Frame.externalCall (Proxy @f) (Just res) "stringEqual"
                        [op1, op2]
-                   emitIR (IR.CJump op (IR.Temp res) (IR.Const 0) fLab tLab)
+                   emitCJump op (IR.Temp res) (IR.Const 0) fLab tLab
 
 transArith :: MonadSemant m f => IR.Binop -> Expr -> Expr -> m f (IR Operand)
 transArith op e1 e2 = do
@@ -713,7 +773,7 @@ transArith op e1 e2 = do
     emitIR (IR.Binop res op op1 op2)
     pure (IR.Temp res)
 
-data LValLocation = InReg | InMem
+data LValLocation = InReg | InMem deriving Eq
 
 transLVal :: forall m f. MonadSemant m f => LVal -> m f (Type, LValLocation, Temp)
 transLVal = transLVal' False
@@ -722,14 +782,15 @@ transLVal = transLVal' False
                 VarInfo{..} <- getVarInfo var
                 op <- accessToIR varInfoAccess
                 let loc = accessToLocation varInfoAccess
-                (, loc, op) <$> actualType varInfoType
+                resOp <- loadNested loc op
+                (, loc, resOp) <$> actualType varInfoType
             Dot lval field _ -> transLVal' True lval >>= \case
                 (TRecord _ fields _, _, recPtr) -> case lookupIndex field fields of
                     Just (typ, idx) -> do
                         let offset = IR.Const $ idx * wordSize (Proxy @f)
                         fieldOp <- newTemp
                         emitIR (IR.Binop fieldOp IR.Add (IR.Temp recPtr) offset)
-                        resOp <- loadNested fieldOp
+                        resOp <- loadNested InMem fieldOp
                         (, InMem, resOp) <$> actualType typ
                     Nothing -> throwError $ RecordHasNoField (getName lval) field
                 _ -> throwError $ NotRecord (getName lval)
@@ -740,11 +801,11 @@ transLVal = transLVal' False
                     let ws = IR.Const $ wordSize (Proxy @f)
                     emitIR (IR.Binop valueOp IR.Mul indexOp ws)
                     emitIR (IR.Binop valueOp IR.Add (IR.Temp valueOp) (IR.Temp arrPtr))
-                    resOp <- loadNested valueOp
+                    resOp <- loadNested InMem valueOp
                     (, InMem, resOp) <$> actualType typ
                 _            -> throwError $ NotArray (getName lval)
-            where loadNested op
-                    | isNested  = do
+            where loadNested loc op
+                    | isNested && loc == InMem  = do
                         res <- newTemp
                         emitIR (IR.Load res (IR.Temp op))
                         pure res
@@ -831,7 +892,8 @@ transDec = \case
                 setSpan decFieldSpan
                 getActualType decFieldType
             label <- newFuncLabel funName
-            insertVarType funName (FunEntry (FunInfo argTypes resType label))
+            level <- getCurrentLevel
+            insertVarType funName (FunEntry (FunInfo argTypes resType label level))
             pure label
 
         forM_ (NonEmpty.zip decs labels) $ \(FunDec{..}, label) -> do

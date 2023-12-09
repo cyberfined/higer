@@ -3,18 +3,19 @@
 module TypeCheckerTests (tests) where
 
 import           Common
-import           Data.Text    (Text)
-import           Test.HUnit   hiding (path)
-import           Tiger.Expr   (Expr)
-import           Tiger.Parser (parse)
-import           Tiger.Semant (PosedSemantException (..), SemantException (..), Type (..),
-                               Unique (..), exceptionToText, posedExceptionToText,
-                               semantAnalyze)
+import           Data.Text            (Text)
+import           Test.HUnit           hiding (path)
+import           Tiger.Expr           (Expr)
+import           Tiger.Parser         (parse)
+import           Tiger.Semant         (PosedSemantException (..), SemantException (..),
+                                       Type (..), Unique (..), exceptionToText,
+                                       posedExceptionToText, semantAnalyze)
 
-import qualified Data.Text    as Text
-import qualified Data.Text.IO as Text
+import qualified Data.Text            as Text
+import qualified Data.Text.IO         as Text
 
-import qualified Tiger.Amd64  as Amd64
+import qualified Tiger.Amd64          as Amd64
+import           Tiger.EscapeAnalysis (escapeAnalyze)
 
 tests :: Test
 tests = mkTestLabel "type checker tests"
@@ -167,6 +168,8 @@ runSemantAnalyzer path = do
                                   ++ path
                                   ++ ":`\n"
                                   ++ Text.unpack err
-        Right expr -> semantAnalyze @Amd64.Frame path expr >>= \case
-            Left err -> pure (Left err)
-            Right _  -> pure (Right expr)
+        Right expr -> do
+            escapeResult <- escapeAnalyze expr
+            semantAnalyze @Amd64.Frame path escapeResult >>= \case
+                Left err -> pure (Left err)
+                Right _  -> pure (Right expr)

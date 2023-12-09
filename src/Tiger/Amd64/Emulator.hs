@@ -1,13 +1,10 @@
-module Tiger.Amd64.Emulator
-    ( Emulator
-    , createEmulator
-    ) where
+module Tiger.Amd64.Emulator (Emulator(..)) where
 
 import           Control.Monad               (forM_)
 import           Control.Monad.IO.Class      (MonadIO, liftIO)
-import           Data.Int                    (Int64)
 import           Data.IORef                  (readIORef)
-import           Data.Proxy                  (Proxy(..))
+import           Data.Int                    (Int64)
+import           Data.Proxy                  (Proxy (..))
 import           Data.Word                   (Word64)
 
 import           Tiger.Amd64.Frame
@@ -20,13 +17,11 @@ import qualified Tiger.IR.Interpreter        as EmulatorClass
 
 data Emulator = Emulator
 
-createEmulator :: Emulator
-createEmulator = Emulator
-
 instance EmulatorClass.Emulator Emulator Frame where
     type Word Emulator = Int64
     type UWord Emulator = Word64
 
+    newEmulator = const $ pure Emulator
     enterFunction Emulator frame@Frame{..} args = do
         (allocSize, Size varsOffset) <- getAllocSize frame
         sp <- allocateStack allocSize
@@ -43,7 +38,7 @@ instance EmulatorClass.Emulator Emulator Frame where
         setRegister FP oldFP
         (deallocSize, _) <- getAllocSize frame
         reduceStack deallocSize
-        
+
 getAllocSize :: MonadIO m => Frame -> m (Size, Size)
 getAllocSize Frame{..} = liftIO $ do
     argsOffset <- readIORef frArgsOffset

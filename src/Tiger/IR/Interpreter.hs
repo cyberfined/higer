@@ -3,6 +3,7 @@
 
 module Tiger.IR.Interpreter
     ( Emulator(..)
+    , FrameEmulator
     , MonadInterpret(..)
     , InterpreterError(..)
     , interpreterErrorText
@@ -130,6 +131,7 @@ class Emulator e f where
     type Word e
     type UWord e
 
+    newEmulator :: MonadIO m => Proxy f -> m e
     enterFunction :: (MonadInterpret m f e, MonadIO (m f e))
                   => e
                   -> f
@@ -256,18 +258,20 @@ type FrameEmulator f e = ( Frame f
                          , Integral (Word e)
                          , Num (Word e)
                          , Integral (UWord e)
+                         , Show (Word e) -- TODO: REMOVE
                          )
 
 data InterpreterResult = InterpreterResult
     { resOutput :: !LazyText.Text
     , resCode   :: !Int
+    , resError  :: !(Maybe InterpreterError)
     }
 
 runInterpreter :: forall f e. FrameEmulator f e
                => e
                -> IRData f
                -> Text
-               -> IO (Either InterpreterError InterpreterResult)
+               -> IO InterpreterResult
 runInterpreter emu IRData{..} input = do
     memory <- Memory.newMemory @(Word e) (Size 64) (Address memBaseAddr)
     stack <- Memory.newStack @(Word e) (Size 64) (Address stBaseAddr)
@@ -316,15 +320,16 @@ runInterpreter emu IRData{..} input = do
                       }
 
     let callMain = void $ callFunction mainLabel []
-    let result code = do
+    let result code err = do
             output <- readIORef outputRef
-            pure $ Right $ InterpreterResult { resOutput = Builder.toLazyText output
-                                             , resCode = code
-                                             }
+            pure $ InterpreterResult { resOutput = Builder.toLazyText output
+                                     , resCode   = code
+                                     , resError  = err
+                                     }
     handle errorHandler (runReaderT (Right <$> runInterpretM callMain) ctx) >>= \case
-        Left (Exit code) -> result code
-        Left err         -> pure $ Left err
-        Right ()         -> result 0
+        Left (Exit code) -> result code Nothing
+        Left err         -> result 1 (Just err)
+        Right ()         -> result 0 Nothing
 
   where stBaseAddr = 0x7ff8
         memBaseAddr = 0x8000
@@ -520,12 +525,12 @@ libFuncs = HashMap.fromList funcsList
 
         createArrayFunc :: LibFunc m f e
         createArrayFunc [size, init] = do
-            Address addr <- allocateMemory (Size $ fromIntegral size * ws)
-            forM_ [addr, addr + ws .. addr + sizeInt] $ \curAddr ->
+            Address addr <- allocateMemory (Size sizeInt)
+            forM_ [addr, addr + ws .. addr + sizeInt - ws] $ \curAddr ->
                 writeMemory (Address curAddr) init
             pure $ Just $ fromIntegral addr
-          where sizeInt = fromIntegral size
-                ws= wordSize (Proxy @f)
+          where sizeInt = fromIntegral size * ws
+                ws = wordSize (Proxy @f)
         createArrayFunc args = argumentsNumMismatch 2 (length args)
 
         stringEqualFunc :: LibFunc m f e

@@ -269,6 +269,7 @@ data LVal
 data Escaping
     = Escaping
     | Remaining
+    deriving Eq
 
 data Binop
     = Add | Sub | Mul | Div
