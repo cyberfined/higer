@@ -22,23 +22,22 @@ source-repository head
 
 library
   exposed-modules:
-      Tiger.Amd64
-    , Tiger.EscapeAnalysis
+      Tiger.EscapeAnalysis
     , Tiger.Expr
-    , Tiger.Frame
-    , Tiger.IR
     , Tiger.Parser
     , Tiger.Semant
+    , Tiger.IR
     , Tiger.Temp
-    , Tiger.TextUtils
+    , Tiger.Frame
+    , Tiger.Amd64
   other-modules:
       Tiger.Amd64.Emulator
     , Tiger.Amd64.Frame
-    , Tiger.IR.Checker
     , Tiger.IR.Printer
     , Tiger.IR.Types
     , Tiger.IR.Interpreter
     , Tiger.IR.Interpreter.Memory
+    , Tiger.TextUtils
   hs-source-dirs:
       src
   ghc-options: -Wall
@@ -90,7 +89,6 @@ test-suite tests
   other-modules:
       Common
     , EscapeAnalysisTests
-    , IRGenTests
     , ParserTests
     , TypeCheckerTests
   hs-source-dirs:

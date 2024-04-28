@@ -1,9 +1,9 @@
-module EscapeAnalysisTests (tests) where
+module EscapeAnalysisTests where
 
 import           Data.Text            (Text)
-import           Prelude              hiding (div, exp, rem, seq)
+import           Prelude              hiding (exp, rem, div, seq)
 import           Test.HUnit           hiding (path, test)
-import           Tiger.EscapeAnalysis (escapeAnalyze, getEscapeAnalysisResult)
+import           Tiger.EscapeAnalysis (escapeAnalyze)
 import           Tiger.Parser         (parse)
 
 import           Common
@@ -396,7 +396,5 @@ test srcLines exp = case parse "test.tig" src of
                                ++ Text.unpack err
     Right act -> do
         escAct <- escapeAnalyze act
-        assertEqual ("when analyze `" ++ Text.unpack src ++ "`")
-                    exp
-                    (EqExpr (getEscapeAnalysisResult escAct))
+        assertEqual ("when analyze `" ++ Text.unpack src ++ "`") exp (EqExpr escAct)
   where src = Text.unlines srcLines

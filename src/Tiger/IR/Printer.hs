@@ -1,22 +1,16 @@
 module Tiger.IR.Printer
-    ( irDataText
-    , irDataBuilder
+    ( irDataBuilder
     , irBuilder
     ) where
 
 import           Data.Text.Lazy.Builder     (Builder)
 
-import           Data.Text.Lazy             (Text)
 import           Tiger.Frame
 import           Tiger.IR.Types
 import           Tiger.Temp                 (labelBuilder, tempBuilder)
 import           Tiger.TextUtils
 
-import qualified Data.Text.Lazy.Builder     as Builder
 import qualified Data.Text.Lazy.Builder.Int as Builder
-
-irDataText :: Frame f => IRData f -> Text
-irDataText = Builder.toLazyText . irDataBuilder
 
 irDataBuilder :: Frame f => IRData f -> Builder
 irDataBuilder IRData{..} = strings <> funcs

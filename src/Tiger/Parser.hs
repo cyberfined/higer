@@ -405,7 +405,7 @@ identifier = lexeme $ do
     xs <- takeWhileP (Just "alphanumeric character") (\c -> isAlphaNum c || c == '_')
     let str = Text.cons x xs
     when (HashSet.member str reservedWords) $ do
-        throwError offset $ "unexpected reserved word " ++ Text.unpack str
+        throwError offset $ "unexpected reserved word" ++ Text.unpack str
     pure str
 
 some :: Parser a -> Parser (NonEmpty a)

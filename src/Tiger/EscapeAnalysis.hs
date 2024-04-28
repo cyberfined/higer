@@ -1,8 +1,4 @@
-module Tiger.EscapeAnalysis
-    ( EscapeAnalysisResult
-    , getEscapeAnalysisResult
-    , escapeAnalyze
-    ) where
+module Tiger.EscapeAnalysis (escapeAnalyze) where
 
 import           Control.Monad          (foldM, forM, when)
 import           Control.Monad.IO.Class (MonadIO, liftIO)
@@ -62,14 +58,8 @@ instance MonadEscape EscapeM where
     markVarEsc (EntryRef ref) = liftIO $ modifyIORef' ref $ \entry ->
         entry { entryEsc = Escaping }
 
-newtype EscapeAnalysisResult = EscapeAnalysisResult (Expr)
-
-getEscapeAnalysisResult :: EscapeAnalysisResult -> Expr
-getEscapeAnalysisResult (EscapeAnalysisResult expr) = expr
-
-escapeAnalyze :: Expr -> IO EscapeAnalysisResult
-escapeAnalyze expr =  EscapeAnalysisResult
-                  <$> runReaderT (runEscapeM (escapeAnalyzeExpr expr)) initCtx
+escapeAnalyze :: Expr -> IO Expr
+escapeAnalyze expr = runReaderT (runEscapeM (escapeAnalyzeExpr expr)) initCtx
   where initCtx = Context HashMap.empty (Depth 0)
 
 escapeAnalyzeExpr :: MonadEscape m => Expr -> m Expr
