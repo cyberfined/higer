@@ -1,4 +1,7 @@
-module Tiger.Amd64.Frame (Frame(..)) where
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies     #-}
+
+module Tiger.Amd64.Frame (Frame) where
 
 import           Control.Monad          (forM)
 import           Control.Monad.IO.Class
@@ -25,8 +28,8 @@ maxRegisterArgs = 6
 instance FrameClass.Frame Frame where
     newFrame label args = do
         curOffsetRef <- liftIO $ newIORef 0
-        numRegArgsRef <- liftIO $ newIORef @Int 0
-        argsOffsetRef <- liftIO $ newIORef $ wordSize (Proxy @Frame)
+        numRegArgsRef <- liftIO (newIORef 0 :: IO (IORef Int))
+        argsOffsetRef <- liftIO $ newIORef 8
         accessArgs <- forM args $ \case
             Escaping -> placeInFrame argsOffsetRef 1
             Remaining -> do
@@ -59,7 +62,7 @@ instance FrameClass.Frame Frame where
             let (posOff, op) = if off < 0 then (-off, Sub) else (off, Add)
             pure ([Binop t op frameAddress (Const posOff)], t)
     procEntryExit = const ([], [])
-    externalCall _ dst name = Call dst (LabelText name)
+    externalCall _ dst name = Call dst (externalFunLabel name)
 
 placeInFrame :: MonadIO m => IORef Int -> Int -> m Access
 placeInFrame curOffsetRef pos = do

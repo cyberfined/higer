@@ -1,7 +1,5 @@
 module Tiger.Amd64
-    ( Frame
-    , module Tiger.Amd64.Emulator
+    ( module Tiger.Amd64.Frame
     ) where
 
-import           Tiger.Amd64.Emulator
-import           Tiger.Amd64.Frame    (Frame)
+import           Tiger.Amd64.Frame

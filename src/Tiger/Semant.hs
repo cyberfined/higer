@@ -1,3 +1,9 @@
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TupleSections         #-}
+{-# LANGUAGE TypeApplications      #-}
+
 module Tiger.Semant
     ( Type(..)
     , Unique(..)
@@ -21,12 +27,11 @@ import           Data.Proxy                 (Proxy (..))
 import           Data.Text                  (Text)
 import           Prelude                    hiding (exp, span)
 
-
-
 import           Tiger.Expr
 import           Tiger.Frame                hiding (Access (..), accessToIR, allocLocal)
-import           Tiger.IR                   (IR, IRData (..), IRFunction (..),
-                                             LabeledString (..), Operand, Stmt)
+import           Tiger.IR                   (ExternalFun (..), IR, IRData (..),
+                                             IRFunction (..), LabeledString (..), Operand,
+                                             Stmt)
 import           Tiger.Temp
 
 import qualified Data.HashMap.Strict        as HashMap
@@ -379,8 +384,8 @@ semantAnalyze file expr = do
                       , ctxIRFunctions        = irFunctionsRef
                       , ctxCurrentIRFunctions = currentIRFunctionsRef
                       }
-    let transMain = initMainFrame >> transExpr expr >> emitIR (IR.Ret Nothing)
-        eval :: IO (Either SemantException ())
+    let transMain = initMainFrame >> transExpr expr
+        eval :: IO (Either SemantException (Type, IR Operand))
         eval = try (runReaderT (runSemantM transMain) ctx)
     eval >>= \case
         Left err -> do
@@ -420,7 +425,7 @@ transExpr expr = do
     case expr of
         LVal lval-> do
             (lvalType, loc, op) <- transLVal lval
-            (lvalType,) . IR.Temp <$> getVarValue op loc
+            (lvalType,) <$> getVarValue (IR.Temp op) loc
         Nil _ -> pure (TNil, IR.Const 0)
         IntLit i _ -> pure (TInt, IR.Const i)
         StrLit str _ -> do
@@ -438,7 +443,7 @@ transExpr expr = do
                 fieldPtr <- newTemp
                 let sizeOp = IR.Const $ length typeFields
                 let initOp = IR.Const 0
-                emitIR $ Frame.externalCall (Proxy @f) (Just recPtr) "createArray"
+                emitIR $ Frame.externalCall (Proxy @f) (Just recPtr) CreateArray
                                                                      [sizeOp, initOp]
 
                 let checkFields (Field{..}:fs) notSeenFields seenFields
@@ -474,7 +479,7 @@ transExpr expr = do
                 unless (isTypesMatch actElemType initExprType) $
                     throwError (TypeMismatch actElemType initExprType)
                 arrPtr <- newTemp
-                emitIR $ Frame.externalCall (Proxy @f) (Just arrPtr) "createArray"
+                emitIR $ Frame.externalCall (Proxy @f) (Just arrPtr) CreateArray
                                                                      [sizeOp, initOp]
                 pure (typ, IR.Temp arrPtr)
             typ -> throwError (NotArrayType typ)
@@ -539,12 +544,10 @@ transExpr expr = do
                 let loc = accessToLocation access
                 assign varOp fromOp loc
                 emitIR (IR.Label begLab)
-                valOp <- getVarValue varOp loc
-                emitIR (IR.CJump IR.Le (IR.Temp valOp) toOp tLab fLab)
+                valOp <- getVarValue (IR.Temp varOp) loc
+                emitIR (IR.CJump IR.Lt valOp toOp tLab fLab)
                 emitIR (IR.Label tLab)
                 checkUnit body
-                emitIR (IR.Binop valOp IR.Add (IR.Temp valOp) (IR.Const 1))
-                assign varOp (IR.Temp valOp) loc
                 emitIR (IR.Jump begLab)
                 emitIR (IR.Label fLab)
             pure (TUnit, undefined)
@@ -564,15 +567,13 @@ transExpr expr = do
                       pure argOp
                   mDst <- if funInfoRet == TUnit then pure Nothing else Just <$> newTemp
                   frame <- getCurrentFrame
-
-                  if HashMap.member funName (libFunctions @f)
-                  then emitIR (Frame.externalCall (Proxy @f) mDst funName argOps)
-                  else do
-                      argOps' <- if Frame.frameName frame == funInfoLabel
-                                 then (:) <$> getStaticLink frame <*> pure argOps
-                                 else pure (IR.Temp FP : argOps)
-                      emitIR (IR.Call mDst funInfoLabel argOps')
-
+                  let isRec = Frame.frameName frame == funInfoLabel
+                  argOps' <- if HashMap.member funName (libFunctions @f)
+                                then pure argOps
+                                else if not isRec
+                                        then pure (IR.Temp FP : argOps)
+                                        else (:) <$> getStaticLink frame <*> pure argOps
+                  emitIR (IR.Call mDst funInfoLabel argOps')
                   let retOp = maybe (IR.Const 0) IR.Temp mDst
                   (,retOp) <$> actualType funInfoRet
               | otherwise -> throwError $ ArgumentsNumberMismatch (length funInfoArgs)
@@ -587,13 +588,13 @@ transExpr expr = do
                 src <- operandToTemp rvalOp
                 emitIR (IR.Store (IR.Temp lvalOp) src)
 
-        getVarValue :: MonadSemant m f => Temp -> LValLocation -> m f Temp
+        getVarValue :: MonadSemant m f => IR Operand -> LValLocation -> m f (IR Operand)
         getVarValue op = \case
             InReg -> pure op
             InMem -> do
                 res <- newTemp
-                emitIR (IR.Load res (IR.Temp op))
-                pure res
+                emitIR (IR.Load res op)
+                pure $ IR.Temp res
 
 transBinop :: MonadSemant m f => Binop -> Expr -> Expr -> m f (IR Operand)
 transBinop op e1 e2 = case op of
@@ -701,7 +702,7 @@ transRelop tLab fLab op e1 e2 = case op of
                then emitIR (IR.CJump op op1 op2 tLab fLab)
                else do
                    res <- newTemp
-                   emitIR $ Frame.externalCall (Proxy @f) (Just res) "stringEqual"
+                   emitIR $ Frame.externalCall (Proxy @f) (Just res) StringEqual
                        [op1, op2]
                    emitIR (IR.CJump op (IR.Temp res) (IR.Const 0) fLab tLab)
 
