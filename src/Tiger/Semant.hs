@@ -12,7 +12,6 @@ import           Control.Exception          (Exception, throwIO, try)
 import           Control.Monad              (foldM, forM, forM_, unless, when)
 import           Control.Monad.IO.Class     (MonadIO (..))
 import           Control.Monad.Reader       (MonadReader, ReaderT, asks, runReaderT)
-import           Data.Foldable              (foldrM)
 import           Data.Functor               (($>))
 import           Data.HashMap.Strict        (HashMap)
 import           Data.IORef                 (IORef, modifyIORef', newIORef, readIORef,
@@ -34,7 +33,6 @@ import           Tiger.IR                   (IR, IRData (..), IRFunction (..),
 import           Tiger.Temp
 
 import qualified Data.HashMap.Strict        as HashMap
-import qualified Data.HashSet               as HashSet
 import qualified Data.List.NonEmpty         as NonEmpty
 import qualified Data.Text                  as Text
 import qualified Data.Text.Lazy             as LazyText
@@ -146,7 +144,6 @@ data SemantException
     | ArgumentsNumberMismatch !Int !Int
     | UnitComparison
     | NilAssignmentWithoutType
-    | DuplicatedFunctionDefinition !Text
     deriving Show
 
 exceptionToText :: SemantException -> Text
@@ -173,7 +170,6 @@ exceptionToText = \case
                                      <> (Text.pack $ show act)
     UnitComparison                   -> "unit type expressions can't be compared"
     NilAssignmentWithoutType         -> "can't assign nil without type constraint"
-    DuplicatedFunctionDefinition fun -> "duplicated definition of function " <> fun
 
 instance Exception SemantException
 
@@ -889,20 +885,16 @@ transDec = \case
                 emitIR (IR.Store (IR.Temp varOp) src)
         insertVarType name (VarEntry (VarInfo varTyp access))
     FunDecs decs -> do
-        let collectLabels FunDec{..} (funSet, ls) = do
-                setSpan funSpan
-                when (HashSet.member funName funSet) $
-                    throwError (DuplicatedFunctionDefinition funName)
-                resType <- maybe (pure TUnit) getActualType funResult
-                argTypes <- forM funArgs $ \DecField{..} -> do
-                    setSpan decFieldSpan
-                    getActualType decFieldType
-                label <- newFuncLabel funName
-                level <- getCurrentLevel
-                insertVarType funName (FunEntry (FunInfo argTypes resType label level))
-                pure (HashSet.insert funName funSet, label:ls)
-        labels <-  NonEmpty.fromList . snd
-               <$> foldrM collectLabels (HashSet.empty, []) decs
+        labels <- forM decs $ \FunDec{..} -> do
+            setSpan funSpan
+            resType <- maybe (pure TUnit) getActualType funResult
+            argTypes <- forM funArgs $ \DecField{..} -> do
+                setSpan decFieldSpan
+                getActualType decFieldType
+            label <- newFuncLabel funName
+            level <- getCurrentLevel
+            insertVarType funName (FunEntry (FunInfo argTypes resType label level))
+            pure label
 
         forM_ (NonEmpty.zip decs labels) $ \(FunDec{..}, label) -> do
             setSpan funSpan

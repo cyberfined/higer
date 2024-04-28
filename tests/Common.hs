@@ -42,10 +42,12 @@ module Common
     , funDec
     , decField
     , recField
+    , mkTestLabel
     ) where
 
 import           Data.Text          (Text)
 import           Prelude            hiding (and, break, div, or, rem, seq, span)
+import           Test.HUnit
 import           Tiger.Expr
 
 import qualified Data.List.NonEmpty as NonEmpty
@@ -296,3 +298,6 @@ decField n e t = DecField n e t span
 
 recField :: Text -> Text -> RecordField
 recField n t = RecordField n t span
+
+mkTestLabel :: String -> [Assertion] -> Test
+mkTestLabel lbl = TestLabel lbl . TestList . map TestCase
