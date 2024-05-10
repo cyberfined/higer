@@ -42,16 +42,14 @@ module Common
     , funDec
     , decField
     , recField
-    , mkTestLabel
     ) where
 
 import           Data.Text          (Text)
 import           Prelude            hiding (and, break, div, or, rem, seq, span)
-import           Test.HUnit
 import           Tiger.Expr
 
 import qualified Data.List.NonEmpty as NonEmpty
-import qualified Data.Text          as Text
+import qualified Data.Text.Lazy     as LazyText
 
 newtype EqExpr = EqExpr { unEqExpr :: Expr }
 
@@ -93,7 +91,7 @@ instance Eq EqExpr where
         _                                            -> False
 
 instance Show EqExpr where
-    show = Text.unpack . exprToText . unEqExpr
+    show = LazyText.unpack . exprToText . unEqExpr
 
 newtype EqLVal = EqLVal LVal
 
@@ -298,6 +296,3 @@ decField n e t = DecField n e t span
 
 recField :: Text -> Text -> RecordField
 recField n t = RecordField n t span
-
-mkTestLabel :: String -> [Assertion] -> Test
-mkTestLabel lbl = TestLabel lbl . TestList . map TestCase

@@ -1,11 +1,12 @@
-import           Test.HUnit
+import           Test.Tasty
 
-import qualified ParserTests
-import qualified SemantTests
 import qualified EscapeAnalysisTests
+import qualified ParserTests
+import qualified TypeCheckerTests
 
 main :: IO ()
-main = runTestTTAndExit $ TestList [ ParserTests.tests
-                                   , SemantTests.tests
-                                   , EscapeAnalysisTests.tests
-                                   ]
+main = defaultMain $ testGroup "Tiger compiler tests"
+    [ ParserTests.tests
+    , EscapeAnalysisTests.tests
+    , TypeCheckerTests.tests
+    ]

@@ -1,11 +1,15 @@
 module Main (main) where
 
-import           Tiger.EscapeAnalysis (escapeAnalyze)
+import           Tiger.EscapeAnalysis (escapeAnalyze, getEscapeAnalysisResult)
 import           Tiger.Expr           (exprToText)
+import           Tiger.IR             (irDataText)
 import           Tiger.Parser         (parse)
 import           Tiger.Semant         (posedExceptionToText, semantAnalyze)
 
 import qualified Data.Text.IO         as TIO
+import qualified Data.Text.Lazy.IO    as LTIO
+
+import qualified Tiger.Amd64          as Amd64
 
 main :: IO ()
 main = do
@@ -14,7 +18,9 @@ main = do
         Left err   -> TIO.putStr err
         Right expr -> do
             escExpr <- escapeAnalyze expr
-            TIO.putStr $ exprToText escExpr
-            semantAnalyze "test.tig" escExpr >>= \case
+            LTIO.putStr $ exprToText (getEscapeAnalysisResult escExpr)
+            semantAnalyze @Amd64.Frame "test.tig" escExpr >>= \case
                 Left err -> TIO.putStrLn (posedExceptionToText err)
-                Right () -> TIO.putStrLn "Type check was successful"
+                Right irCode -> do
+                    TIO.putStrLn "Type check was successful"
+                    LTIO.putStr $ irDataText irCode

@@ -1,6 +1,7 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+
 module Tiger.Semant
     ( Type(..)
-    , Unique(..)
     , SemantException(..)
     , PosedSemantException(..)
     , posedExceptionToText
@@ -8,80 +9,72 @@ module Tiger.Semant
     , semantAnalyze
     ) where
 
-import           Control.Exception      (Exception, throwIO, try)
-import           Control.Monad          (foldM, forM, forM_, unless, when)
-import           Control.Monad.IO.Class (MonadIO (..))
-import           Control.Monad.Reader   (MonadReader, ReaderT, asks, runReaderT)
-import           Data.Functor           (($>))
-import           Data.HashMap.Strict    (HashMap)
-import           Data.IORef             (IORef, modifyIORef', newIORef, readIORef,
-                                         writeIORef)
-import           Data.List              (delete)
-import           Data.Text              (Text)
-import           Prelude                hiding (exp, span)
+import           Control.Exception         (Exception, throwIO, try)
+import           Control.Monad             (foldM, forM, forM_, mapAndUnzipM, unless,
+                                            when)
+import           Control.Monad.IO.Class    (MonadIO (..))
+import           Control.Monad.Reader      (MonadReader, ReaderT, asks, runReaderT)
+import           Data.HashMap.Strict       (HashMap)
+import           Data.IORef                (IORef, modifyIORef', newIORef, readIORef,
+                                            writeIORef)
+import           Data.List                 (delete)
+import           Data.Maybe                (catMaybes)
+import           Data.Text                 (Text)
+import           Data.Vector.Hashtables    (Dictionary, PrimMonad (PrimState))
+import           Prelude                   hiding (exp, span)
 
+import           Tiger.EscapeAnalysis      (EscapeAnalysisResult, getEscapeAnalysisResult)
 import           Tiger.Expr
+import           Tiger.Frame               (Frame)
+import           Tiger.IR.Types            (IR, IRData (..), IRFunction,
+                                            LabeledString (..))
+import           Tiger.Semant.LibFunctions (LibFunction (..))
+import           Tiger.Semant.Type
+import           Tiger.Temp
+import           Tiger.Translate
+import           Tiger.Unique
 
-import qualified Data.HashMap.Strict    as HashMap
-import qualified Data.List.NonEmpty     as NonEmpty
-import qualified Data.Text              as Text
+import qualified Data.HashMap.Strict       as HashMap
+import qualified Data.HashSet              as HashSet
+import qualified Data.List.NonEmpty        as NonEmpty
+import qualified Data.Text                 as Text
+import qualified Data.Vector.Hashtables    as HashTable
+import qualified Data.Vector.Mutable       as MVec
 
-data Type
-    = TInt
-    | TString
-    | TRecord !Text ![(Text, Type)] !Unique
-    | TArray !Type !Unique
-    | TNil
-    | TUnit
-    | TName !TypeRef
-    deriving Eq
+import qualified Tiger.Semant.LibFunctions as LibFunctions
 
-isTypesMacth :: Type -> Type -> Bool
-isTypesMacth TInt TInt                         = True
-isTypesMacth TString TString                   = True
-isTypesMacth TRecord{} TNil                    = True
-isTypesMacth TNil TRecord{}                    = True
-isTypesMacth (TRecord _ _ u1) (TRecord _ _ u2) = u1 == u2
-isTypesMacth (TArray _ u1) (TArray _ u2)       = u1 == u2
-isTypesMacth TNil TNil                         = True
-isTypesMacth TUnit TUnit                       = True
-isTypesMacth (TName r1) (TName r2)             = r1 == r2
-isTypesMacth _ _                               = False
+type HashTable k v = Dictionary (PrimState IO) MVec.MVector k MVec.MVector v
 
-instance Show Type where
-    show = Text.unpack . typeToText
+newtype SemantM f a = SemantM { runSemantM :: ReaderT (Context f) IO a }
+    deriving newtype (Functor, Applicative, Monad, MonadReader (Context f), MonadIO)
 
-typeToText :: Type -> Text
-typeToText = \case
-    TInt            -> "int"
-    TString         -> "string"
-    TRecord rec _ _ -> rec
-    TArray typ _    -> typeToText typ <> "[]"
-    TNil            -> "nil"
-    TUnit           -> "unit"
-    TName{}         -> "name"
-
-newtype Unique = Unique Int deriving Eq
-
-newtype TypeRef = TypeRef (IORef (Maybe Type)) deriving Eq
-
-newtype SemantM a = SemantM { runSemantM :: ReaderT Context IO a }
-    deriving newtype (Functor, Applicative, Monad, MonadReader Context, MonadIO)
-
-data Context = Context
-    { ctxUnique :: !(IORef Unique)
-    , ctxEnvs   :: !(IORef [(HashMap Text EnvEntry, HashMap Text Type)])
-    , ctxSpan   :: !(IORef Span)
-    , ctxInLoop :: !(IORef Bool)
+data Context f = Context
+    { ctxUnique       :: !(IORef Unique)
+    , ctxEnvs         :: !(IORef [(HashMap Text (EnvEntry f), HashMap Text Type)])
+    , ctxSpan         :: !(IORef Span)
+    , ctxLoopEndLabel :: !(IORef (Maybe Label))
+    , ctxCurrentLevel :: !(IORef (Level f))
+    , ctxNextLabel    :: !(IORef Int)
+    , ctxNextTemp     :: !(IORef Int)
+    , ctxStrings      :: !(HashTable Text Label)
+    , ctxIRFuncs      :: !(IORef [IRFunction f])
     }
 
-data EnvEntry
-    = VarEntry !Type
-    | FunEntry ![Type] !Type
+data EnvEntry f
+    = VarEntry !(VarInfo f)
+    | FunEntry !(FunInfo f)
 
-data EnvRequestType
-    = ReqVar
-    | ReqFun
+data VarInfo f = VarInfo
+    { varInfoType   :: !Type
+    , varInfoAccess :: !(Access f)
+    }
+
+data FunInfo f = FunInfo
+    { funInfoArgs        :: ![Type]
+    , funInfoRet         :: !Type
+    , funInfoLabel       :: !Label
+    , funInfoParentLevel :: Level f
+    }
 
 data SemantException
     = UndefinedVariable !Text
@@ -102,6 +95,7 @@ data SemantException
     | ArgumentsNumberMismatch !Int !Int
     | UnitComparison
     | NilAssignmentWithoutType
+    | DuplicatedFunctionDefinition !Text
     deriving Show
 
 exceptionToText :: SemantException -> Text
@@ -128,6 +122,7 @@ exceptionToText = \case
                                      <> (Text.pack $ show act)
     UnitComparison                   -> "unit type expressions can't be compared"
     NilAssignmentWithoutType         -> "can't assign nil without type constraint"
+    DuplicatedFunctionDefinition fun -> "duplicated definition of function " <> fun
 
 instance Exception SemantException
 
@@ -140,12 +135,14 @@ posedExceptionToText (PosedSemantException file err span)
   <> ": " <> exceptionToText err
   where Span (Position l1 c1) (Position l2 c2) = span
 
-instance MonadSemant SemantM where
+instance Frame f => MonadUnique (SemantM f) where
     newUnique = do
         uniqueRef <- asks ctxUnique
         uniq@(Unique cur) <- liftIO $ readIORef uniqueRef
         liftIO $ writeIORef uniqueRef $ Unique (cur + 1)
         pure uniq
+
+instance Frame f => MonadSemant SemantM f where
     newTypeRef = TypeRef <$> liftIO (newIORef Nothing)
     readTypeRef (TypeRef ref) = liftIO (readIORef ref)
     writeTypeRef (TypeRef ref) typ = liftIO (writeIORef ref $ Just typ)
@@ -168,15 +165,9 @@ instance MonadSemant SemantM where
         liftIO $ modifyIORef' envsRef $ \case
             ((varEnv, typeEnv):xs) -> (varEnv, HashMap.insert name entry typeEnv):xs
             _                      -> [(HashMap.empty, HashMap.singleton name entry)]
-    getVarType name reqType = do
-        let err = case reqType of
-                ReqFun -> UndefinedFunction
-                ReqVar -> UndefinedVariable
-        asks ctxEnvs >>= liftIO . readIORef >>= \case
-            (varEnv, _):_ -> case HashMap.lookup name varEnv of
-                Just entry -> pure entry
-                Nothing    -> liftIO $ throwIO $ err name
-            _ -> liftIO $ throwIO $ err name
+    getEnvEntry name = asks ctxEnvs >>= liftIO . readIORef >>= pure . \case
+        (env, _):_ -> HashMap.lookup name env
+        _          -> Nothing
     getType name = do
         asks ctxEnvs >>= liftIO . readIORef >>= \case
             (_, typeEnv):_ -> case HashMap.lookup name typeEnv of
@@ -184,174 +175,242 @@ instance MonadSemant SemantM where
                 Nothing    -> liftIO $ throwIO $ UndefinedType name
             _ -> liftIO $ throwIO $ UndefinedType name
     withLoop f = do
-        inLoopRef <- asks ctxInLoop
-        initValue <- liftIO $ readIORef inLoopRef
-        liftIO $ writeIORef inLoopRef True
-        res <- f
-        liftIO $ writeIORef inLoopRef initValue
+        loopEndLabelRef <- asks ctxLoopEndLabel
+        initValue <- liftIO $ readIORef loopEndLabelRef
+        fLab <- newLabel
+        liftIO $ writeIORef loopEndLabelRef (Just fLab)
+        res <- f fLab
+        liftIO $ writeIORef loopEndLabelRef initValue
         pure res
-    getIsInLoop = asks ctxInLoop >>= liftIO . readIORef
+    getLoopEndLabel = asks ctxLoopEndLabel >>= liftIO . readIORef
     setSpan s = asks ctxSpan >>= \spanRef -> liftIO $ writeIORef spanRef s
     throwError = liftIO . throwIO
 
-class Monad m => MonadSemant m where
-    newUnique     :: m Unique
-    newTypeRef    :: m TypeRef
-    readTypeRef   :: TypeRef -> m (Maybe Type)
-    writeTypeRef  :: TypeRef -> Type -> m ()
-    withNewEnv    :: m a -> m a
-    insertVarType :: Text -> EnvEntry -> m ()
-    insertType    :: Text -> Type -> m ()
-    getVarType    :: Text -> EnvRequestType -> m EnvEntry
-    getType       :: Text -> m Type
-    withLoop      :: m a -> m a
-    getIsInLoop   :: m Bool
-    setSpan       :: Span -> m ()
-    throwError    :: SemantException -> m a
+instance Frame f => MonadTemp (SemantM f) where
+    newTemp = do
+        nextTempRef <- asks ctxNextTemp
+        tmp <- liftIO $ readIORef nextTempRef
+        liftIO $ modifyIORef' nextTempRef (+1)
+        pure $ Temp tmp
 
-semantAnalyze :: FilePath -> Expr -> IO (Either PosedSemantException ())
+    newLabel = do
+        nextLabelRef <- asks ctxNextLabel
+        lbl <- liftIO $ readIORef nextLabelRef
+        liftIO $ modifyIORef' nextLabelRef (+1)
+        pure $ LabelInt lbl
+
+instance Frame f => MonadTranslate SemantM f where
+    getCurrentLevel = asks ctxCurrentLevel >>= liftIO . readIORef
+
+    setCurrentLevel level = do
+        currentLevelRef <- asks ctxCurrentLevel
+        liftIO $ writeIORef currentLevelRef level
+
+    insertString str label = do
+        stringsMap <- asks ctxStrings
+        liftIO $ HashTable.insert stringsMap str label
+
+    lookupString str = do
+        stringsMap <- asks ctxStrings
+        liftIO $ HashTable.lookup stringsMap str
+
+    insertIRFunction func = do
+        irFuncsRef <- asks ctxIRFuncs
+        liftIO $ modifyIORef' irFuncsRef (func:)
+
+class (Frame f, MonadUnique (m f)) => MonadSemant m f where
+    newTypeRef      :: m f TypeRef
+    readTypeRef     :: TypeRef -> m f (Maybe Type)
+    writeTypeRef    :: TypeRef -> Type -> m f ()
+    withNewEnv      :: m f a -> m f a
+    insertVarType   :: Text -> EnvEntry f -> m f ()
+    insertType      :: Text -> Type -> m f ()
+    getEnvEntry     :: Text -> m f (Maybe (EnvEntry f))
+    getType         :: Text -> m f Type
+    withLoop        :: (Label -> m f a) -> m f a
+    getLoopEndLabel :: m f (Maybe Label)
+    setSpan         :: Span -> m f ()
+    throwError      :: SemantException -> m f a
+
+semantAnalyze :: forall f. Frame f
+              => FilePath
+              -> EscapeAnalysisResult
+              -> IO (Either PosedSemantException (IRData f))
 semantAnalyze file expr = do
     uniqueRef <- newIORef (Unique 0)
-    envsRef <- newIORef [(initFunctions, initTypes)]
+    envsRef <- newIORef [(libFunctions, initTypes)]
     spanRef <- newIORef (Span (Position 0 0) (Position 0 0))
-    inLoopRef <- newIORef False
-    let ctx = Context uniqueRef envsRef spanRef inLoopRef
-    let eval :: IO (Either SemantException Type)
-        eval = try (runReaderT (runSemantM $ transExpr expr) ctx)
-    eval >>= \case
+    loopEndLabelRef <- newIORef Nothing
+    currentLevelRef <- newIORef undefined
+    nextLabelRef <- newIORef 0
+    nextTempRef <- newIORef 0
+    stringsMap <- HashTable.initialize 64
+    irFuncsRef <- newIORef []
+    let ctx = Context
+            { ctxUnique       = uniqueRef
+            , ctxEnvs         = envsRef
+            , ctxSpan         = spanRef
+            , ctxLoopEndLabel = loopEndLabelRef
+            , ctxCurrentLevel = currentLevelRef
+            , ctxNextLabel    = nextLabelRef
+            , ctxNextTemp     = nextTempRef
+            , ctxStrings      = stringsMap
+            , ctxIRFuncs      = irFuncsRef
+            }
+    let transMain = withMainFrame (transExpr @f (getEscapeAnalysisResult expr))
+    try (runReaderT (runSemantM transMain) ctx) >>= \case
         Left err -> do
             span <- readIORef spanRef
             pure (Left $ PosedSemantException file err span)
-        Right{}  -> pure (Right ())
-  where initFunctions = HashMap.fromList
-            [ ("print", FunEntry [TString] TUnit)
-            , ("flush", FunEntry [] TUnit)
-            , ("getchar", FunEntry [] TString)
-            , ("ord", FunEntry [TString] TInt)
-            , ("chr", FunEntry [TInt] TString)
-            , ("size", FunEntry [TString] TInt)
-            , ("substring", FunEntry [TString, TInt, TInt] TString)
-            , ("concat", FunEntry [TString, TString] TString)
-            , ("not", FunEntry [TInt] TInt)
-            , ("exit", FunEntry [TInt] TUnit)
-            ]
-        initTypes = HashMap.fromList [("int", TInt), ("string", TString)]
+        Right{} -> do
+            strings <- map (uncurry LabeledString) <$> HashTable.toList stringsMap
+            functions <- readIORef irFuncsRef
+            pure $ Right $ IRData strings functions
+  where initTypes = HashMap.fromList [("int", TInt), ("string", TString)]
+        libFunctions = HashMap.fromList $ map libFunToEntry LibFunctions.libFunctions
+        libFunToEntry LibFunction{..} =
+            let info = FunInfo libFunArgs libFunRet (LabelText libFunName) undefined
+            in (libFunName, FunEntry info)
 
-transExpr :: MonadSemant m => Expr -> m Type
+transExpr :: (Frame f, MonadSemant m f, MonadTranslate m f)
+          => Expr
+          -> m f (Type, IR)
 transExpr expr = do
     setSpan (exprSpan expr)
     case expr of
-        LVal lval -> transLVal lval
-        Nil _ -> pure TNil
-        IntLit{} -> pure TInt
-        StrLit{} -> pure TString
-        Neg e _ -> checkInt e $> TInt
+        LVal lval  -> transLVal lval
+        Nil _      -> pure (TNil, irNil)
+        IntLit i _ -> pure (TInt, irInt i)
+        StrLit s _ -> irString s >>= \ir -> pure (TString, ir)
+        Neg e _ -> (TInt,) <$> checkInt e
         Binop e1 op e2 _ -> do
             let checkEq = do
-                    e1Type <- transExpr e1
-                    e2Type <- transExpr e2
+                    (e1Type, ir1) <- transExpr e1
+                    (e2Type, ir2) <- transExpr e2
                     when (e1Type == TUnit) $
                         throwErrorPos UnitComparison (exprSpan e1)
                     when (e2Type == TUnit) $
                         throwErrorPos UnitComparison (exprSpan e2)
-                    unless (isTypesMacth e1Type e2Type) $
+                    unless (isTypesMatch e1Type e2Type) $
                         throwErrorPos (TypeMismatch e1Type e2Type) (exprSpan e2)
-                    pure TInt
+                    (TInt,) <$> transBinop op e1Type ir1 ir2
             case op of
                 Eq -> checkEq
                 Ne -> checkEq
-                _  -> checkInt e1 >> checkInt e2 $> TInt
+                _  -> do
+                    ir1 <- checkInt e1
+                    ir2 <- checkInt e2
+                    (TInt,) <$> transBinop op TInt ir1 ir2
         Record typeName fields _ -> getActualType typeName >>= \case
             typ@(TRecord _ typeFields _) -> do
-                let checkField (notSeenFields, seenFields) Field{..}
+                let checkField (notSeenFields, seenFields, values) Field{..}
                       | fieldName `elem` seenFields
                       = throwErrorPos (DuplicatedRecordField fieldName) fieldSpan
-                      | Just fieldType <- lookup fieldName typeFields
+                      | Just (fieldType, fieldIdx) <- lookupIndex fieldName typeFields
                       = do
-                          fieldValueType <- transExpr fieldValue
+                          (fieldValueType, fieldValueIr) <- transExpr fieldValue
                           actFieldType <- actualType fieldType
-                          unless (isTypesMacth actFieldType fieldValueType) $
+                          unless (isTypesMatch actFieldType fieldValueType) $
                               throwErrorPos (TypeMismatch actFieldType fieldValueType)
                                             fieldSpan
-                          pure (delete fieldName notSeenFields, fieldName:seenFields)
+                          pure ( delete fieldName notSeenFields
+                               , fieldName:seenFields
+                               , (fieldValueIr, fieldIdx):values
+                               )
                       | otherwise
                       = throwError (RecordHasNoField typeName fieldName)
-                fst <$> foldM checkField (map fst typeFields, []) fields >>= \case
-                    (f:_) -> throwError (UnitializedRecordField typeName f)
-                    _     -> pure typ
+                foldM checkField (map fst typeFields, [], []) fields >>= \case
+                    ((f:_), _, _)  -> throwError (UnitializedRecordField typeName f)
+                    (_, _, values) -> (typ, ) <$> transRecord values
             typ -> throwError (NotRecordType typ)
         Array typeName sizeExpr initExpr _ -> getActualType typeName >>= \case
             typ@(TArray elemType _) -> do
                 actElemType <- actualType elemType
-                checkInt sizeExpr
-                initExprType <- transExpr initExpr
-                unless (isTypesMacth actElemType initExprType) $
-                    throwError (TypeMismatch actElemType initExprType)
-                pure typ
+                sizeIr <- checkInt sizeExpr
+                (initType, initIr) <- transExpr initExpr
+                unless (isTypesMatch actElemType initType) $
+                    throwError (TypeMismatch actElemType initType)
+                (typ,) <$> transArray sizeIr initIr
             typ -> throwError (NotArrayType typ)
         Assign lval rval _ -> do
-            lvalType <- transLVal lval
-            rvalType <- transExpr rval
-            unless (isTypesMacth lvalType rvalType) $
+            (lvalType, lvalIr) <- transLVal lval
+            (rvalType, rvalIr) <- transExpr rval
+            unless (isTypesMatch lvalType rvalType) $
                 throwErrorPos (TypeMismatch lvalType rvalType) (exprSpan rval)
-            pure TUnit
+            (TUnit,) <$> transAssign lvalIr rvalIr
         If cond th mel _ -> do
-            checkInt cond
+            condIr <- checkInt cond
             case mel of
                 Just el -> do
-                    thType <- transExpr th
-                    elType <- transExpr el
-                    unless (isTypesMacth thType elType) $
+                    (thType, thIr) <- transExpr th
+                    (elType, elIr) <- transExpr el
+                    unless (isTypesMatch thType elType) $
                         throwError (TypeMismatch thType elType)
-                    case (thType, elType) of
-                        (_, TRecord{}) -> pure elType
-                        _              -> pure thType
-                Nothing -> checkUnit th $> TUnit
-        While cond body _ -> withLoop $ do
-            checkInt cond
-            checkUnit body
-            pure TUnit
-        For var _ startExpr endExpr body _ -> do
-            checkInt startExpr
-            checkInt endExpr
-            withNewEnv $ withLoop $ do
-                insertVarType var (VarEntry TInt)
-                checkUnit body
-            pure TUnit
-        Seq es _ -> foldM (\_ e -> transExpr e) TUnit es
-        Call funName args _ -> getVarType funName ReqFun >>= \case
-            FunEntry expArgTypes resType
-              | length args == length expArgTypes -> do
-                  forM_ (zip args expArgTypes) $ \(arg, expArgType) -> do
-                      actExpArgType <- actualType expArgType
-                      argType <- transExpr arg
-                      unless (isTypesMacth actExpArgType argType) $
-                          throwErrorPos (TypeMismatch actExpArgType argType)
-                                        (exprSpan arg)
-                  actualType resType
-              | otherwise -> throwError $ ArgumentsNumberMismatch (length expArgTypes)
-                                                                  (length args)
-            _ -> throwError (UndefinedFunction funName)
-        Break _ -> do
-            isInLoop <- getIsInLoop
-            unless isInLoop (throwError BreakOutsideLoop)
-            pure TUnit
+                    let resType = case (thType, elType) of
+                            (_, TRecord{}) -> elType
+                            _              -> thType
+                    (resType, ) <$> transIfElse resType condIr thIr elIr
+                Nothing -> do
+                    thIr <- checkUnit th
+                    (TUnit, ) <$> transIf condIr thIr
+        While cond body _ -> withLoop $ \fLab -> do
+            condIr <- checkInt cond
+            bodyIr <- checkUnit body
+            (TUnit,) <$> transWhile condIr bodyIr fLab
+        For var esc startExpr endExpr body _ -> do
+            startIr <- checkInt startExpr
+            endIr <- checkInt endExpr
+            withNewEnv $ withLoop $ \fLab -> do
+                access <- allocLocal esc
+                insertVarType var (VarEntry $ VarInfo TInt access)
+                bodyIr <- checkUnit body
+                (TUnit, ) <$> transFor access startIr endIr bodyIr fLab
+        Break _ -> getLoopEndLabel >>= \case
+            Nothing   -> throwError BreakOutsideLoop
+            Just fLab -> pure (TUnit, transBreak fLab)
+        Seq es _ -> do
+            (esTypes, esIr) <- mapAndUnzipM transExpr es
+            let resTyp = if null esTypes then TUnit else last esTypes
+            (resTyp,) <$> transSeq resTyp esIr
+        Call funName args _ -> getFunInfo funName >>= \case
+            FunInfo{..}
+                | length args == length funInfoArgs -> do
+                      argsIR <- forM (zip args funInfoArgs) $ \(arg, expArgType) -> do
+                          actExpArgType <- actualType expArgType
+                          (argType, argIR) <- transExpr arg
+                          unless (isTypesMatch actExpArgType argType) $
+                              throwErrorPos (TypeMismatch actExpArgType argType)
+                                            (exprSpan arg)
+                          pure argIR
+                      retType <- actualType funInfoRet
+                      retIR <- transCall funName funInfoLabel funInfoParentLevel argsIR
+                      pure (retType, retIR)
+                | otherwise -> throwError $ ArgumentsNumberMismatch (length funInfoArgs)
+                                                                    (length args)
         Let ds e _ -> withNewEnv $ do
-            mapM_ transDec ds
-            transExpr e
+            irs <- catMaybes . NonEmpty.toList <$> mapM transDec ds
+            (typ, ir) <- transExpr e
+            (typ,) <$> transLet irs ir
 
-transLVal :: MonadSemant m => LVal -> m Type
+transLVal :: (Frame f, MonadSemant m f, MonadTranslate m f)
+          => LVal
+          -> m f (Type, IR)
 transLVal = \case
-    Var var _ -> getVarType var ReqVar >>= \case
-        VarEntry typ -> actualType typ
-        FunEntry{}   -> throwError $ UndefinedVariable var
+    Var var _ -> do
+        VarInfo{..} <- getVarInfo var
+        op <- transVar varInfoAccess
+        (, op) <$> actualType varInfoType
     Dot lval field _ -> transLVal lval >>= \case
-        TRecord _ fields _ -> case lookup field fields of
-            Just typ -> actualType typ
-            Nothing  -> throwError $ RecordHasNoField (getName lval) field
+        (TRecord _ fields _, recPtr) -> case lookupIndex field fields of
+            Just (typ, idx) -> do
+                op <- transDot recPtr idx
+                (, op) <$> actualType typ
+            Nothing -> throwError $ RecordHasNoField (getName lval) field
         _ -> throwError $ NotRecord (getName lval)
     Index lval index _ -> transLVal lval >>= \case
-        TArray typ _ -> checkInt index >> actualType typ
+        (TArray typ _, arrPtr) -> do
+            indexIr <- checkInt index
+            (,) <$> actualType typ <*> transIndex arrPtr indexIr
         _            -> throwError $ NotArray (getName lval)
   where getName :: LVal -> Text
         getName = \case
@@ -359,7 +418,7 @@ transLVal = \case
             Dot _ field _  -> field
             Index lval _ _ -> getName lval
 
-transDec :: MonadSemant m => Dec -> m ()
+transDec :: (Frame f, MonadSemant m f, MonadTranslate m f) => Dec -> m f (Maybe IR)
 transDec = \case
     TypeDecs decs -> do
         typeRefs <- forM decs $ \TypeDec{..} -> do
@@ -399,59 +458,90 @@ transDec = \case
                 typ <- TArray <$> getType name <*> newUnique
                 insertType typeName typ
                 writeTypeRef ref typ
-    VarDec name mtyp expr _ span -> do
+
+        pure Nothing
+    VarDec name mtyp expr esc span -> do
         setSpan span
-        exprTyp <- transExpr expr
+        (exprTyp, ir) <- transExpr expr
         varTyp <- case mtyp of
             Just typText -> do
                 typ <- getActualType typText
-                if isTypesMacth typ exprTyp
+                if isTypesMatch typ exprTyp
                    then pure typ
                    else throwErrorPos (TypeMismatch typ exprTyp) (exprSpan expr)
             Nothing
               | exprTyp == TUnit -> throwErrorPos UnitAssignment (exprSpan expr)
               | exprTyp == TNil  -> throwErrorPos NilAssignmentWithoutType (exprSpan expr)
               | otherwise        -> pure exprTyp
-        insertVarType name (VarEntry varTyp)
+        access <- allocLocal esc
+        insertVarType name (VarEntry $ VarInfo varTyp access)
+        Just <$> transVarDec ir access
     FunDecs decs -> do
-        forM_ decs $ \FunDec{..} -> do
-            setSpan funSpan
-            resType <- maybe (pure TUnit) getActualType funResult
-            argTypes <- forM funArgs $ \DecField{..} -> do
-                setSpan decFieldSpan
-                getActualType decFieldType
-            insertVarType funName (FunEntry argTypes resType)
-
-        forM_ decs $ \FunDec{..} -> do
-            setSpan funSpan
-            expResType <- maybe (pure TUnit) getActualType funResult
-            actResType <- withNewEnv $ do
-                forM_ funArgs $ \DecField{..} -> do
+        let insertFuncs (FunDec{..}:ds) funSet fs = do
+                setSpan funSpan
+                when (HashSet.member funName funSet) $
+                    throwError $ DuplicatedFunctionDefinition funName
+                resType <- maybe (pure TUnit) getActualType funResult
+                argTypes <- forM funArgs $ \DecField{..} -> do
                     setSpan decFieldSpan
-                    argType <- getActualType decFieldType
-                    insertVarType decFieldName (VarEntry argType)
-                transExpr funBody
-            unless (isTypesMacth expResType actResType) $
-                throwErrorPos (TypeMismatch expResType actResType) funSpan
+                    getActualType decFieldType
+                label <- newFuncLabel funName
+                level <- getCurrentLevel
+                let funInfo = FunInfo argTypes resType label level
+                insertVarType funName (FunEntry funInfo)
+                insertFuncs ds (HashSet.insert funName funSet) (funInfo:fs)
+            insertFuncs _ _ fs = pure $ NonEmpty.fromList $ reverse fs
+        funInfos <- insertFuncs (NonEmpty.toList decs) HashSet.empty []
 
-checkInt :: MonadSemant m => Expr -> m ()
+        forM_ (NonEmpty.zip decs funInfos) $ \(FunDec{..}, FunInfo{..}) -> do
+            setSpan funSpan
+            let argEscapes = map decFieldEscape funArgs
+            (actResType, _) <- withNewEnv $
+                withNewFrame funInfoLabel argEscapes $ \argAccesses -> do
+                    forM_ (zip funArgs argAccesses) $ \(DecField{..}, argAccess) -> do
+                        setSpan decFieldSpan
+                        argType <- getActualType decFieldType
+                        insertVarType decFieldName (VarEntry (VarInfo argType argAccess))
+                    transExpr funBody
+            unless (isTypesMatch funInfoRet actResType) $
+                throwErrorPos (TypeMismatch funInfoRet actResType) funSpan
+        pure Nothing
+
+checkInt :: (Frame f, MonadSemant m f, MonadTranslate m f) => Expr -> m f IR
 checkInt expr = transExpr expr >>= \case
-    TInt -> pure ()
-    typ  -> throwErrorPos (TypeMismatch TInt typ) (exprSpan expr)
+    (TInt, ir) -> pure ir
+    (typ, _)   -> throwErrorPos (TypeMismatch TInt typ) (exprSpan expr)
 
-checkUnit :: MonadSemant m => Expr -> m ()
+checkUnit :: (Frame f, MonadSemant m f, MonadTranslate m f) => Expr -> m f IR
 checkUnit expr = transExpr expr >>= \case
-    TUnit -> pure ()
-    typ   -> throwErrorPos (TypeMismatch TUnit typ) (exprSpan expr)
+    (TUnit, ir) -> pure ir
+    (typ, _)    -> throwErrorPos (TypeMismatch TUnit typ) (exprSpan expr)
 
-throwErrorPos :: MonadSemant m => SemantException -> Span -> m a
+throwErrorPos :: (Frame f, MonadSemant m f) => SemantException -> Span -> m f a
 throwErrorPos e s = setSpan s >> throwError e
 
-getActualType :: MonadSemant m => Text -> m Type
+getActualType :: (Frame f, MonadSemant m f) => Text -> m f Type
 getActualType typeName = getType typeName >>= actualType
 
-actualType :: MonadSemant m => Type -> m Type
+actualType :: (Frame f, MonadSemant m f) => Type -> m f Type
 actualType (TName ref) = readTypeRef ref >>= \case
     Just typ -> actualType typ
     Nothing  -> throwError EmptyName
 actualType typ = pure typ
+
+lookupIndex :: Eq a => a -> [(a, b)] -> Maybe (b, Int)
+lookupIndex = lookupIndex' 0
+  where lookupIndex' idx k ((f, b) : xs)
+          | k == f    = Just (b, idx)
+          | otherwise = lookupIndex' (idx + 1) k xs
+        lookupIndex' _ _ _ = Nothing
+
+getVarInfo :: (Frame f, MonadSemant m f) => Text -> m f (VarInfo f)
+getVarInfo name = getEnvEntry name >>= \case
+    Just (VarEntry varInfo) -> pure varInfo
+    _                       -> throwError $ UndefinedVariable name
+
+getFunInfo :: (Frame f, MonadSemant m f) => Text -> m f (FunInfo f)
+getFunInfo name = getEnvEntry name >>= \case
+    Just (FunEntry funInfo) -> pure funInfo
+    _                       -> throwError $ UndefinedFunction name

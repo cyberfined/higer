@@ -10,4 +10,3 @@ function nfactor(n: int) =
 in
 	nfactor(10)
 end
-
