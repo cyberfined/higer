@@ -118,8 +118,8 @@ exceptionToText = \case
     UnitAssignment                   -> "can't assign unit type expression"
     UndefinedFunction fun            -> "undefined function " <> fun
     ArgumentsNumberMismatch exp act  -> "wrong number of arguments: expecting "
-                                     <> (Text.pack $ show exp) <> ", actual "
-                                     <> (Text.pack $ show act)
+                                     <> Text.pack (show exp) <> ", actual "
+                                     <> Text.pack (show act)
     UnitComparison                   -> "unit type expressions can't be compared"
     NilAssignmentWithoutType         -> "can't assign nil without type constraint"
     DuplicatedFunctionDefinition fun -> "duplicated definition of function " <> fun
@@ -282,7 +282,9 @@ transExpr expr = do
         Nil _      -> pure (TNil, irNil)
         IntLit i _ -> pure (TInt, irInt i)
         StrLit s _ -> irString s >>= \ir -> pure (TString, ir)
-        Neg e _ -> (TInt,) <$> checkInt e
+        Neg e _ -> do
+            ir <- checkInt e
+            (TInt,) <$> transNeg ir
         Binop e1 op e2 _ -> do
             let checkEq = do
                     (e1Type, ir1) <- transExpr e1
@@ -303,7 +305,7 @@ transExpr expr = do
                     (TInt,) <$> transBinop op TInt ir1 ir2
         Record typeName fields _ -> getActualType typeName >>= \case
             typ@(TRecord _ typeFields _) -> do
-                let checkField (notSeenFields, seenFields, values) Field{..}
+                let checkFields notSeenFields seenFields values (Field{..}:fs)
                       | fieldName `elem` seenFields
                       = throwErrorPos (DuplicatedRecordField fieldName) fieldSpan
                       | Just (fieldType, fieldIdx) <- lookupIndex fieldName typeFields
@@ -313,15 +315,16 @@ transExpr expr = do
                           unless (isTypesMatch actFieldType fieldValueType) $
                               throwErrorPos (TypeMismatch actFieldType fieldValueType)
                                             fieldSpan
-                          pure ( delete fieldName notSeenFields
-                               , fieldName:seenFields
-                               , (fieldValueIr, fieldIdx):values
-                               )
+                          checkFields (delete fieldName notSeenFields)
+                                      (fieldName : seenFields)
+                                      ((fieldValueIr, fieldIdx) : values)
+                                      fs
                       | otherwise
                       = throwError (RecordHasNoField typeName fieldName)
-                foldM checkField (map fst typeFields, [], []) fields >>= \case
-                    ((f:_), _, _)  -> throwError (UnitializedRecordField typeName f)
-                    (_, _, values) -> (typ, ) <$> transRecord values
+                    checkFields (f:_) _ _ [] =
+                        throwError (UnitializedRecordField typeName f)
+                    checkFields _ _ values [] = transRecord (reverse values)
+                (typ, ) <$> checkFields (map fst typeFields) [] [] fields
             typ -> throwError (NotRecordType typ)
         Array typeName sizeExpr initExpr _ -> getActualType typeName >>= \case
             typ@(TArray elemType _) -> do

@@ -10,6 +10,7 @@ module Tiger.Translate
     , irNil
     , irInt
     , irString
+    , transNeg
     , transVar
     , transDot
     , transIndex
@@ -99,10 +100,11 @@ withNewFrame' parentLevel funLabel args f = do
     res@(retTyp, bodyIR) <- f $ map (Access newLevel) (tail $ Frame.frameArgs frame)
     bodyStmt <- if retTyp == TUnit
                 then irToStmt bodyIR
-                else Move (Temp RV) <$> (irToExpr bodyIR)
+                else Move (Temp RV) <$> irToExpr bodyIR
+    frame' <- levelFrame <$> getCurrentLevel
     let func = IRFunction
             { irFuncBody  = Frame.procEntryExit1 frame bodyStmt
-            , irFuncFrame = frame
+            , irFuncFrame = frame'
             }
     insertIRFunction func
     pure res
@@ -128,6 +130,9 @@ irString str = do
         Nothing -> newLabel >>= \l -> insertString str l >> pure l
     pure $ Ex $ Name label
 
+transNeg :: MonadTranslate m f => IR -> m f IR
+transNeg = fmap (Ex . Binop Sub (Const 0)) . irToExpr
+
 transVar :: MonadTranslate m f => Access f -> m f IR
 transVar = fmap Ex . transVarExpr
 
@@ -142,7 +147,8 @@ transVarExpr access@(Access _ frAccess)
 transDot :: forall m f. MonadTranslate m f => IR -> Int -> m f IR
 transDot recPtr idx = do
     recPtrExpr <- irToExpr recPtr
-    pure $ Ex $ Mem $ Binop Add recPtrExpr offset
+    let addrExpr = if idx == 0 then recPtrExpr else Binop Add recPtrExpr offset
+    pure $ Ex $ Mem addrExpr
   where offset = Const $ idx * Frame.wordSize (Proxy @f)
 
 transIndex :: forall m f. MonadTranslate m f => IR -> IR -> m f IR
@@ -200,15 +206,16 @@ transBinop exprOp typ ir1 ir2 = case exprOp of
 
 transRecord :: forall m f. MonadTranslate m f => [(IR, Int)] -> m f IR
 transRecord values = do
-    recPtr <- newTemp
-    let stmt = Move (Temp recPtr) createRecord
+    recPtr <- Temp <$> newTemp
+    let stmt = Move recPtr createRecord
     initFields <- mapM (toAssign recPtr) values
-    pure $ Ex $ ESeq (Seq (stmt :| initFields)) (Temp recPtr)
+    pure $ Ex $ ESeq (Seq (stmt :| initFields)) recPtr
   where createRecord = Frame.externalCall (Proxy @f) "createRecord" [numFields]
         numFields = Const $ length values
         toAssign recPtr (value, idx) =
             let offset = Const $ idx * Frame.wordSize (Proxy @f)
-            in Move (Mem $ Binop Add (Temp recPtr) offset) <$> irToExpr value
+                addrExpr = if idx == 0 then recPtr  else Binop Add recPtr offset
+            in Move (Mem addrExpr) <$> irToExpr value
 
 transArray :: forall m f. MonadTranslate m f => IR -> IR -> m f IR
 transArray sizeIR initIR = do
@@ -234,11 +241,18 @@ transIfElse :: MonadTranslate m f => Type -> IR -> IR -> IR -> m f IR
 transIfElse typ condIR thIR elIR = do
     tLab <- newLabel
     fLab <- newLabel
+    skipLab <- newLabel
     if typ == TUnit
        then do
         thStmt <- irToStmt thIR
         elStmt <- irToStmt elIR
-        pure $ Nx $ Seq $ cond tLab fLab :| [Label tLab, thStmt, Label fLab, elStmt]
+        pure $ Nx $ Seq $ cond tLab fLab :| [ Label tLab
+                                            , thStmt
+                                            , Jump skipLab
+                                            , Label fLab
+                                            , elStmt
+                                            , Label skipLab
+                                            ]
        else do
         resTmp <- Temp <$> newTemp
         thExpr <- irToExpr thIR
@@ -246,8 +260,10 @@ transIfElse typ condIR thIR elIR = do
         let seqStmt = Seq $ Move resTmp (Const 0) :| [ cond tLab fLab
                                                      , Label tLab
                                                      , Move resTmp thExpr
+                                                     , Jump skipLab
                                                      , Label fLab
                                                      , Move resTmp elExpr
+                                                     , Label skipLab
                                                      ]
         pure $ Ex $ ESeq seqStmt resTmp
   where cond = irToCond condIR
@@ -272,7 +288,7 @@ transFor access startIR endIR bodyIR fLab = do
     startExpr <- irToExpr startIR
     endExpr <- irToExpr endIR
     bodyStmt <- irToStmt bodyIR
-    pure $ Nx $ Seq $ (Move varExpr startExpr) :|
+    pure $ Nx $ Seq $ Move varExpr startExpr :|
         [ Move endTmp endExpr
         , Label begLab
         , CJump Le varExpr endTmp tLab fLab
@@ -290,13 +306,13 @@ transSeq :: MonadTranslate m f => Type -> [IR] -> m f IR
 transSeq resTyp irs
   | resTyp == TUnit = case NonEmpty.nonEmpty irs of
         Nothing    -> pure irNil
-        Just irsNe -> Nx . Seq <$> mapM irToStmt irsNe
+        Just irsNe -> Nx . stripSeq <$> mapM irToStmt irsNe
   | otherwise = case unsnoc irs of
         Nothing      -> error "Empty Seq"
         Just (xs, x) -> case NonEmpty.nonEmpty xs of
             Nothing   -> pure x
             Just xsNe -> do
-                seqStmt <- Seq <$> mapM irToStmt xsNe
+                seqStmt <- stripSeq <$> mapM irToStmt xsNe
                 Ex . ESeq seqStmt <$> irToExpr x
 
 transCall :: forall m f. MonadTranslate m f => Text -> Label -> Level f -> [IR] -> m f IR
@@ -327,11 +343,11 @@ transLet mIRStmts irRes = case NonEmpty.nonEmpty mIRStmts of
     Just irStmts -> do
         stmts <- mapM irToStmt irStmts
         res <- irToExpr irRes
-        pure $ Ex $ ESeq (Seq stmts) res
+        pure $ Ex $ ESeq (stripSeq stmts) res
 
 transVarDec :: MonadTranslate m f => IR -> Access f -> m f IR
 transVarDec srcIR access = do
-    dst <- accessToIR access
+    dst <- transVarExpr access
     src <- irToExpr srcIR
     pure $ Nx $ Move dst src
 
@@ -366,8 +382,12 @@ followStaticLinks fp level innerLevel@Level{..}
 getStaticLink :: MonadTranslate m f => f -> Expr -> m f Expr
 getStaticLink frame frameAddress = do
     op <- Frame.accessToIR frame stLinkAccess frameAddress
-    pure $ Mem $ op
+    pure $ Mem op
   where stLinkAccess = head $ Frame.frameArgs frame
+
+stripSeq :: NonEmpty Stmt -> Stmt
+stripSeq (stmt :| []) = stmt
+stripSeq stmts        = Seq stmts
 
 irToExpr :: MonadTemp m => IR -> m Expr
 irToExpr = \case

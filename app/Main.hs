@@ -1,15 +1,22 @@
 module Main (main) where
 
-import           Tiger.EscapeAnalysis (escapeAnalyze, getEscapeAnalysisResult)
-import           Tiger.Expr           (exprToText)
-import           Tiger.IR             (irDataText)
-import           Tiger.Parser         (parse)
-import           Tiger.Semant         (posedExceptionToText, semantAnalyze)
+import           Data.Proxy                 (Proxy (..))
 
-import qualified Data.Text.IO         as TIO
-import qualified Data.Text.Lazy.IO    as LTIO
+import           Tiger.EscapeAnalysis       (escapeAnalyze, getEscapeAnalysisResult)
+import           Tiger.Expr                 (exprToText)
+import           Tiger.IR                   (Emulator (..), InterpreterResult (..),
+                                             interpreterErrorBuilder, irDataText,
+                                             runInterpreter)
+import           Tiger.Parser               (parse)
+import           Tiger.Semant               (posedExceptionToText, semantAnalyze)
+import           Tiger.TextUtils            (lazyStringBuilder)
 
-import qualified Tiger.Amd64          as Amd64
+import qualified Data.Text.IO               as TIO
+import qualified Data.Text.Lazy.Builder     as Builder
+import qualified Data.Text.Lazy.Builder.Int as Builder
+import qualified Data.Text.Lazy.IO          as LTIO
+
+import qualified Tiger.Amd64                as Amd64
 
 main :: IO ()
 main = do
@@ -24,3 +31,21 @@ main = do
                 Right irCode -> do
                     TIO.putStrLn "Type check was successful"
                     LTIO.putStr $ irDataText irCode
+
+                    emu <- newEmulator @Amd64.Emulator (Proxy @Amd64.Frame)
+                    InterpreterResult{..} <- runInterpreter emu irCode "2\nKill"
+                    case resError of
+                        Just err -> do
+                            let resText =  Builder.toLazyText
+                                        $ "\n"
+                                        <> interpreterErrorBuilder err <> "\n"
+                                        <> "output: " <> lazyStringBuilder resOutput
+                                        <> "\ncode: " <> Builder.decimal resCode
+                                        <> "\n"
+                            LTIO.putStr resText
+                        Nothing -> do
+                            let resText = Builder.toLazyText
+                                        $ "\noutput: " <> lazyStringBuilder resOutput
+                                        <> "\ncode: " <> Builder.decimal resCode
+                                        <> "\n"
+                            LTIO.putStr resText

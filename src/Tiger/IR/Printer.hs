@@ -40,6 +40,7 @@ irDataBuilder IRData{..} = strings <> funcs
             let args = intercalate ", " (map accessBuilder $ frameArgs irFuncFrame)
             in labelBuilder (frameName irFuncFrame)
             <> "(" <> args <> "):\n"
+            <> frameBuilder irFuncFrame <> "\n"
             <> stmtBuilder irFuncBody
 
 stmtText :: Stmt -> LazyText.Text
@@ -59,7 +60,7 @@ stmtBuilder s = stmtBuilder' s "" ""
                     , (Just "true", labelBuilder' tLab)
                     , (Just "false", labelBuilder' fLab)
                     ]
-            Seq es -> showNode ";" $ map stmtBuilder' $ NonEmpty.toList es
+            Seq es -> showNode "seq" $ map stmtBuilder' $ NonEmpty.toList es
             Label l -> showLeaf $ labelBuilder l <> ":"
 
         exprBuilder' :: Expr -> Builder -> Builder -> Builder
@@ -72,7 +73,7 @@ stmtBuilder s = stmtBuilder' s "" ""
                                                          ]
             Mem e -> showNode "mem" [exprBuilder' e]
             Call fun args -> showNode (labelBuilder fun <> "()") $ map exprBuilder' args
-            ESeq stmt expr -> showNode ";" [stmtBuilder' stmt, exprBuilder' expr]
+            ESeq stmt expr -> showNode "eseq" [stmtBuilder' stmt, exprBuilder' expr]
 
         labelBuilder' :: Temp.Label -> Builder -> Builder -> Builder
         labelBuilder' = showLeaf . labelBuilder

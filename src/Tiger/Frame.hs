@@ -31,3 +31,4 @@ class Frame a where
     accessToIR :: MonadTemp m => a -> Access -> Expr -> m Expr
     externalCall :: Proxy a -> Text -> [Expr] -> Expr
     procEntryExit1 :: a -> Stmt -> Stmt
+    frameBuilder :: a -> Builder
