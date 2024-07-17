@@ -12,6 +12,7 @@ import           Tiger.Parser         (parse)
 import           Tiger.Semant         (PosedSemantException (..), SemantException (..),
                                        Type (..), exceptionToText, posedExceptionToText,
                                        semantAnalyze)
+import           Tiger.Temp           (InitLabel (..), InitTemp (..), runTempM)
 import           Tiger.Unique         (Unique (..))
 
 import qualified Data.Text            as Text
@@ -218,6 +219,7 @@ runSemantAnalyzer path = do
                                   ++ Text.unpack err
         Right expr -> do
             escapeResult <- escapeAnalyze expr
-            semantAnalyze @Amd64.Frame path escapeResult >>= \case
-                Left err -> pure (Left err)
-                Right _  -> pure (Right expr)
+            runTempM (InitTemp 0) (InitLabel 0) $
+                semantAnalyze @Amd64.Frame path escapeResult >>= \case
+                    Left err -> pure (Left err)
+                    Right _  -> pure (Right expr)

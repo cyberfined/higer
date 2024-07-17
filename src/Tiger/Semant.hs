@@ -9,11 +9,14 @@ module Tiger.Semant
     , semantAnalyze
     ) where
 
-import           Control.Exception         (Exception, throwIO, try)
+import           Control.Exception         (Exception)
 import           Control.Monad             (foldM, forM, forM_, mapAndUnzipM, unless,
                                             when)
+import           Control.Monad.Except      (ExceptT (..), MonadError (..), runExceptT,
+                                            throwError)
 import           Control.Monad.IO.Class    (MonadIO (..))
 import           Control.Monad.Reader      (MonadReader, ReaderT, asks, runReaderT)
+import           Control.Monad.Trans.Class (lift)
 import           Data.HashMap.Strict       (HashMap)
 import           Data.IORef                (IORef, modifyIORef', newIORef, readIORef,
                                             writeIORef)
@@ -26,7 +29,7 @@ import           Prelude                   hiding (exp, span)
 import           Tiger.EscapeAnalysis      (EscapeAnalysisResult, getEscapeAnalysisResult)
 import           Tiger.Expr
 import           Tiger.Frame               (Frame)
-import           Tiger.IR.Types            (IR, IRData (..), IRFunction,
+import           Tiger.IR.Types            (IR, IRData (..), IRDataStmt, IRFunctionStmt,
                                             LabeledString (..))
 import           Tiger.Semant.LibFunctions (LibFunction (..))
 import           Tiger.Semant.Type
@@ -45,8 +48,15 @@ import qualified Tiger.Semant.LibFunctions as LibFunctions
 
 type HashTable k v = Dictionary (PrimState IO) MVec.MVector k MVec.MVector v
 
-newtype SemantM f a = SemantM { runSemantM :: ReaderT (Context f) IO a }
-    deriving newtype (Functor, Applicative, Monad, MonadReader (Context f), MonadIO)
+newtype SemantM m f a = SemantM
+    { runSemantM :: ReaderT (Context f) (ExceptT SemantException m) a
+    } deriving newtype ( Functor
+                       , Applicative
+                       , Monad
+                       , MonadReader (Context f)
+                       , MonadIO
+                       , MonadError SemantException
+                       )
 
 data Context f = Context
     { ctxUnique       :: !(IORef Unique)
@@ -54,10 +64,8 @@ data Context f = Context
     , ctxSpan         :: !(IORef Span)
     , ctxLoopEndLabel :: !(IORef (Maybe Label))
     , ctxCurrentLevel :: !(IORef (Level f))
-    , ctxNextLabel    :: !(IORef Int)
-    , ctxNextTemp     :: !(IORef Int)
     , ctxStrings      :: !(HashTable Text Label)
-    , ctxIRFuncs      :: !(IORef [IRFunction f])
+    , ctxIRFuncs      :: !(IORef [IRFunctionStmt f])
     }
 
 data EnvEntry f
@@ -135,14 +143,14 @@ posedExceptionToText (PosedSemantException file err span)
   <> ": " <> exceptionToText err
   where Span (Position l1 c1) (Position l2 c2) = span
 
-instance Frame f => MonadUnique (SemantM f) where
+instance (Frame f, MonadIO m) => MonadUnique (SemantM m f) where
     newUnique = do
         uniqueRef <- asks ctxUnique
         uniq@(Unique cur) <- liftIO $ readIORef uniqueRef
         liftIO $ writeIORef uniqueRef $ Unique (cur + 1)
         pure uniq
 
-instance Frame f => MonadSemant SemantM f where
+instance (Frame f, MonadIO m, MonadTemp m) => MonadSemant (SemantM m) f where
     newTypeRef = TypeRef <$> liftIO (newIORef Nothing)
     readTypeRef (TypeRef ref) = liftIO (readIORef ref)
     writeTypeRef (TypeRef ref) typ = liftIO (writeIORef ref $ Just typ)
@@ -172,8 +180,8 @@ instance Frame f => MonadSemant SemantM f where
         asks ctxEnvs >>= liftIO . readIORef >>= \case
             (_, typeEnv):_ -> case HashMap.lookup name typeEnv of
                 Just entry -> pure entry
-                Nothing    -> liftIO $ throwIO $ UndefinedType name
-            _ -> liftIO $ throwIO $ UndefinedType name
+                Nothing    -> throwError $ UndefinedType name
+            _ -> throwError $ UndefinedType name
     withLoop f = do
         loopEndLabelRef <- asks ctxLoopEndLabel
         initValue <- liftIO $ readIORef loopEndLabelRef
@@ -184,22 +192,12 @@ instance Frame f => MonadSemant SemantM f where
         pure res
     getLoopEndLabel = asks ctxLoopEndLabel >>= liftIO . readIORef
     setSpan s = asks ctxSpan >>= \spanRef -> liftIO $ writeIORef spanRef s
-    throwError = liftIO . throwIO
 
-instance Frame f => MonadTemp (SemantM f) where
-    newTemp = do
-        nextTempRef <- asks ctxNextTemp
-        tmp <- liftIO $ readIORef nextTempRef
-        liftIO $ modifyIORef' nextTempRef (+1)
-        pure $ Temp tmp
+instance (Frame f, MonadTemp m) => MonadTemp (SemantM m f) where
+    newTemp = SemantM $ lift $ lift newTemp
+    newLabel = SemantM $ lift $ lift newLabel
 
-    newLabel = do
-        nextLabelRef <- asks ctxNextLabel
-        lbl <- liftIO $ readIORef nextLabelRef
-        liftIO $ modifyIORef' nextLabelRef (+1)
-        pure $ LabelInt lbl
-
-instance Frame f => MonadTranslate SemantM f where
+instance (Frame f, MonadIO m, MonadTemp m) => MonadTranslate (SemantM m) f where
     getCurrentLevel = asks ctxCurrentLevel >>= liftIO . readIORef
 
     setCurrentLevel level = do
@@ -218,7 +216,7 @@ instance Frame f => MonadTranslate SemantM f where
         irFuncsRef <- asks ctxIRFuncs
         liftIO $ modifyIORef' irFuncsRef (func:)
 
-class (Frame f, MonadUnique (m f)) => MonadSemant m f where
+class (Frame f, MonadError SemantException (m f), MonadUnique (m f)) => MonadSemant m f where
     newTypeRef      :: m f TypeRef
     readTypeRef     :: TypeRef -> m f (Maybe Type)
     writeTypeRef    :: TypeRef -> Type -> m f ()
@@ -230,41 +228,36 @@ class (Frame f, MonadUnique (m f)) => MonadSemant m f where
     withLoop        :: (Label -> m f a) -> m f a
     getLoopEndLabel :: m f (Maybe Label)
     setSpan         :: Span -> m f ()
-    throwError      :: SemantException -> m f a
 
-semantAnalyze :: forall f. Frame f
+semantAnalyze :: forall f m. (Frame f, MonadIO m, MonadTemp m)
               => FilePath
               -> EscapeAnalysisResult
-              -> IO (Either PosedSemantException (IRData f))
+              -> m (Either PosedSemantException (IRDataStmt f))
 semantAnalyze file expr = do
-    uniqueRef <- newIORef (Unique 0)
-    envsRef <- newIORef [(libFunctions, initTypes)]
-    spanRef <- newIORef (Span (Position 0 0) (Position 0 0))
-    loopEndLabelRef <- newIORef Nothing
-    currentLevelRef <- newIORef undefined
-    nextLabelRef <- newIORef 0
-    nextTempRef <- newIORef 0
-    stringsMap <- HashTable.initialize 64
-    irFuncsRef <- newIORef []
+    uniqueRef <- liftIO $ newIORef (Unique 0)
+    envsRef <- liftIO $ newIORef [(libFunctions, initTypes)]
+    spanRef <- liftIO $ newIORef (Span (Position 0 0) (Position 0 0))
+    loopEndLabelRef <- liftIO $ newIORef Nothing
+    currentLevelRef <- liftIO $ newIORef undefined
+    stringsMap <- liftIO $ HashTable.initialize 64
+    irFuncsRef <- liftIO $ newIORef []
     let ctx = Context
             { ctxUnique       = uniqueRef
             , ctxEnvs         = envsRef
             , ctxSpan         = spanRef
             , ctxLoopEndLabel = loopEndLabelRef
             , ctxCurrentLevel = currentLevelRef
-            , ctxNextLabel    = nextLabelRef
-            , ctxNextTemp     = nextTempRef
             , ctxStrings      = stringsMap
             , ctxIRFuncs      = irFuncsRef
             }
     let transMain = withMainFrame (transExpr @f (getEscapeAnalysisResult expr))
-    try (runReaderT (runSemantM transMain) ctx) >>= \case
+    runExceptT (runReaderT (runSemantM transMain) ctx) >>= \case
         Left err -> do
-            span <- readIORef spanRef
+            span <- liftIO $ readIORef spanRef
             pure (Left $ PosedSemantException file err span)
         Right{} -> do
-            strings <- map (uncurry LabeledString) <$> HashTable.toList stringsMap
-            functions <- readIORef irFuncsRef
+            strings <- map (uncurry LabeledString) <$> liftIO (HashTable.toList stringsMap)
+            functions <- liftIO $ readIORef irFuncsRef
             pure $ Right $ IRData strings functions
   where initTypes = HashMap.fromList [("int", TInt), ("string", TString)]
         libFunctions = HashMap.fromList $ map libFunToEntry LibFunctions.libFunctions

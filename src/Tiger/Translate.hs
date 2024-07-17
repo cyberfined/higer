@@ -59,7 +59,7 @@ class (Frame f, MonadTemp (m f), MonadUnique (m f)) => MonadTranslate m f where
     setCurrentLevel  :: Level f -> m f ()
     insertString     :: Text -> Label -> m f ()
     lookupString     :: Text -> m f (Maybe Label)
-    insertIRFunction :: IRFunction f -> m f ()
+    insertIRFunction :: IRFunctionStmt f -> m f ()
 
 data Level f = Level
     { levelUnique :: !Unique
@@ -103,7 +103,7 @@ withNewFrame' parentLevel funLabel args f = do
                 else Move (Temp RV) <$> irToExpr bodyIR
     frame' <- levelFrame <$> getCurrentLevel
     let func = IRFunction
-            { irFuncBody  = Frame.procEntryExit1 frame bodyStmt
+            { irFuncBody  = Seq $ Frame.procEntryExit1 frame bodyStmt :| [Ret]
             , irFuncFrame = frame'
             }
     insertIRFunction func

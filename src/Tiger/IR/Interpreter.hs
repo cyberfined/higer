@@ -8,6 +8,7 @@ module Tiger.IR.Interpreter
     , FrameEmulator
     , MonadInterpret(..)
     , InterpreterResult(..)
+    , Interpretable
     , runInterpreter
     , interpreterErrorBuilder
     ) where
@@ -23,7 +24,7 @@ import           Data.Char                   (chr, ord)
 import           Data.HashMap.Strict         (HashMap)
 import           Data.IORef                  (IORef, modifyIORef', newIORef, readIORef,
                                               writeIORef)
-import           Data.Maybe                  (isJust, isNothing)
+import           Data.Maybe                  (fromJust, isJust, isNothing)
 import           Data.Proxy                  (Proxy (..))
 import           Data.Text                   (Text)
 import           Data.Text.Lazy.Builder      (Builder)
@@ -37,6 +38,7 @@ import           Tiger.IR.Printer
 import           Tiger.IR.Types
 import           Tiger.Temp                  (Label, Temp, labelBuilder, tempBuilder)
 
+import qualified Data.Graph.Inductive        as Graph
 import qualified Data.HashMap.Strict         as HashMap
 import qualified Data.Text                   as Text
 import qualified Data.Text.Lazy              as LazyText
@@ -172,12 +174,68 @@ class Monad (m f e) => MonadInterpret m f e where
     readMemory      :: FrameEmulator f e => Address -> m f e (Word e)
     writeMemory     :: FrameEmulator f e => Address -> Word e -> m f e ()
     getLabelValue   :: FrameEmulator f e => Label -> m f e Int
-    jumpLabel       :: FrameEmulator f e => Label -> m f e a
     newString       :: FrameEmulator f e => Text -> m f e Address
     callFunction    :: FrameEmulator f e => Label -> [Word e] -> m f e ()
     printString     :: FrameEmulator f e => Text -> m f e ()
     readChar        :: FrameEmulator f e => m f e Text
     getCurrentFunc  :: FrameEmulator f e => m f e Label
+    jumpLabel       :: FrameEmulator f e => Label -> m f e a
+
+class Interpretable f e b where
+    initFunctions :: FrameEmulator f e
+                  => IRData b f
+                  -> HashTable Label (Function InterpretM f e)
+                  -> HashTable Label (LabelValue InterpretM f e)
+                  -> IO ()
+
+instance (Frame f, Emulator e f) => Interpretable f e Stmt where
+    initFunctions IRData{..} funcsMap labelsMap = mapM_ insertFunc irFunctions
+      where insertFunc IRFunction{..} = do
+                let key = frameName irFuncFrame
+                let func = Function { funExpr  = runStmtInterpreterM Nothing irFuncBody
+                                    , funFrame = irFuncFrame
+                                    }
+                HashTable.insert funcsMap key func
+                insertLabelsStmt irFuncBody irFuncBody
+
+            insertLabelsStmt  outer = \case
+                Move dst src      -> insertLabelsExpr outer dst
+                                  >> insertLabelsExpr outer src
+                Expr e            -> insertLabelsExpr outer e
+                Jump{}            -> pure ()
+                CJump _ e1 e2 _ _ -> insertLabelsExpr outer e1
+                                  >> insertLabelsExpr outer e2
+                Seq ss            -> mapM_ (insertLabelsStmt outer) ss
+                Label l           -> HashTable.insert labelsMap l
+                                  $  LabelPos $ runStmtInterpreterM (Just l) outer
+                Ret               -> pure ()
+
+            insertLabelsExpr outer = \case
+                Const{}       -> pure ()
+                Name{}        -> pure ()
+                Temp{}        -> pure ()
+                Binop _ e1 e2 -> insertLabelsExpr outer e1
+                              >> insertLabelsExpr outer e2
+                Mem e         -> insertLabelsExpr outer e
+                Call _ args   -> mapM_ (insertLabelsExpr outer) args
+                ESeq s e      -> insertLabelsStmt outer s
+                              >> insertLabelsExpr outer e
+
+instance (Frame f, Emulator e f) => Interpretable f e ControlFlowGraph where
+    initFunctions IRData{..} funcsMap labelsMap = mapM_ insertFunc irFunctions
+      where insertFunc IRFunction{..} = do
+                let key = frameName irFuncFrame
+                let (_, _, startBlock, _) = fromJust
+                                          $ fst
+                                          $ Graph.match 0
+                                          $ cfgGraph irFuncBody
+                let func = Function { funExpr  = runCFGInterpreterM startBlock
+                                    , funFrame = irFuncFrame
+                                    }
+                HashTable.insert funcsMap key func
+                forM_ (Graph.labNodes $ cfgGraph irFuncBody) $ \(_, block@Block{..}) -> do
+                    let labelVal = LabelPos $ runCFGInterpreterM block
+                    HashTable.insert labelsMap blockLabel labelVal
 
 instance (Frame f, Emulator e f) => MonadError InterpreterError (InterpretM f e) where
     throwError = liftIO . throwIO
@@ -247,13 +305,6 @@ instance (Frame f, Emulator e f) => MonadInterpret InterpretM f e where
                 LabelAddress addr -> pure addr
                 LabelPos{}        -> liftIO $ throwIO $ ReadPositionLabelValue l
             Nothing -> liftIO $ throwIO $ JumpToUndefinedLabel l
-    jumpLabel l = do
-        labelsMap <- asks ctxLabels
-        liftIO (HashTable.lookup labelsMap l) >>= \case
-            Just val -> case val of
-                LabelPos pos   -> pos >> throwError EndOfFunction
-                LabelAddress{} -> liftIO $ throwIO $ JumpToStringLabel l
-            Nothing -> liftIO $ throwIO $ JumpToUndefinedLabel l
     newString str = do
         addr@(Address key) <- allocateMemory (Size (wordSize (Proxy @f)))
         stringsMap <- asks ctxStrings
@@ -288,6 +339,13 @@ instance (Frame f, Emulator e f) => MonadInterpret InterpretM f e where
             pure $ Text.singleton $ Text.index input pos
         else pure ""
     getCurrentFunc = asks ctxCurrentFunction >>= liftIO . readIORef
+    jumpLabel l = do
+        labelsMap <- asks ctxLabels
+        liftIO (HashTable.lookup labelsMap l) >>= \case
+            Just val -> case val of
+                LabelPos pos   -> pos >> throwError EndOfFunction
+                LabelAddress{} -> liftIO $ throwIO $ JumpToStringLabel l
+            Nothing -> liftIO $ throwIO $ JumpToUndefinedLabel l
 
 data InterpreterResult = InterpreterResult
     { resOutput :: !LazyText.Text
@@ -295,12 +353,12 @@ data InterpreterResult = InterpreterResult
     , resError  :: !(Maybe InterpreterError)
     }
 
-runInterpreter :: forall f e. FrameEmulator f e
+runInterpreter :: forall f e b. (FrameEmulator f e, Interpretable f e b)
                => e
-               -> IRData f
+               -> IRData b f
                -> Text
                -> IO InterpreterResult
-runInterpreter emu IRData{..} input = do
+runInterpreter emu ir@IRData{..} input = do
     memory <- Memory.newMemory @(Word e) (Size 64) (Address memBaseAddr)
     stack <- Memory.newStack @(Word e) (Size 64) (Address stBaseAddr)
     regs <- Memory.newGrowVector @(Word e) (Size 64)
@@ -315,19 +373,12 @@ runInterpreter emu IRData{..} input = do
     labelsMap <- HashTable.initialize 64
     let insertString LabeledString{..} = do
             Address addr <- Memory.allocMemory memory (Size (wordSize (Proxy @f)))
-            liftIO $ HashTable.insert stringsMap addr lStringValue
-            liftIO $ HashTable.insert labelsMap lStringLabel (LabelAddress addr)
+            HashTable.insert stringsMap addr lStringValue
+            HashTable.insert labelsMap lStringLabel (LabelAddress addr)
     mapM_ insertString irStrings
 
-    funcsMap <- liftIO $ HashTable.initialize 16
-    let insertFunc IRFunction{..} = do
-            HashTable.insert funcsMap key func
-            insertLabelsStmt labelsMap irFuncBody irFuncBody
-          where key = frameName irFuncFrame
-                func = Function { funExpr  = runInterpreterM Nothing irFuncBody
-                                , funFrame = irFuncFrame
-                                }
-    liftIO $ mapM_ insertFunc irFunctions
+    funcsMap <- HashTable.initialize 16
+    initFunctions ir funcsMap labelsMap
 
     let ctx = Context { ctxMemory          = memory
                       , ctxStack           = stack
@@ -352,11 +403,11 @@ runInterpreter emu IRData{..} input = do
                                      , resCode   = code
                                      , resError  = err
                                      }
-    handle errorHandler (runReaderT (Right <$> runInterpretM callMain) ctx) >>= \case
+    let callMainIO = runReaderT (runInterpretM callMain) ctx
+    handle errorHandler (Right <$> callMainIO) >>= \case
         Left (Exit code) -> result code Nothing
         Left err         -> result 1 (Just err)
         Right ()         -> result 0 Nothing
-
   where stBaseAddr = 0x7ff8
         memBaseAddr = 0x8000
         mainLabel = Temp.LabelText "main"
@@ -364,55 +415,52 @@ runInterpreter emu IRData{..} input = do
         errorHandler :: InterpreterError -> IO (Either InterpreterError a)
         errorHandler = pure . Left
 
-        insertLabelsStmt labels outer = \case
-            Move dst src      -> insertLabelsExpr labels outer dst
-                              >> insertLabelsExpr labels outer src
-            Expr e            -> insertLabelsExpr labels outer e
-            Jump{}            -> pure ()
-            CJump _ e1 e2 _ _ -> insertLabelsExpr labels outer e1
-                              >> insertLabelsExpr labels outer e2
-            Seq ss            -> mapM_ (insertLabelsStmt labels outer) ss
-            Label l           -> liftIO $ HashTable.insert labels l
-                              $  LabelPos $ runInterpreterM (Just l) outer
-
-        insertLabelsExpr labels outer = \case
-            Const{}       -> pure ()
-            Name{}        -> pure ()
-            Temp{}        -> pure ()
-            Binop _ e1 e2 -> insertLabelsExpr labels outer e1
-                          >> insertLabelsExpr labels outer e2
-            Mem e         -> insertLabelsExpr labels outer e
-            Call _ args   -> mapM_ (insertLabelsExpr labels outer) args
-            ESeq s e      -> insertLabelsStmt labels outer s
-                          >> insertLabelsExpr labels outer e
-
-runInterpreterM :: forall m f e. ( FrameEmulator f e
-                                 , MonadError InterpreterError (m f e)
-                                 , MonadInterpret m f e
-                                 )
+runStmtInterpreterM :: ( FrameEmulator f e
+                       , MonadError InterpreterError (m f e)
+                       , MonadInterpret m f e
+                       )
                 => Maybe Label
                 -> Stmt
                 -> m f e ()
-runInterpreterM skipLblInit stmtInit = void $ runStmtM skipLblInit stmtInit
-  where runStmtM :: Maybe Label -> Stmt -> m f e (Maybe Label)
-        runStmtM skipLbl stmt = withCurrentStmt stmt $ case stmt of
-            Move dst src -> move skipLbl dst src
-            Expr e -> fst <$> runExprM skipLbl e
-            Jump lbl
-              | isJust skipLbl -> pure skipLbl
-              | otherwise      -> jumpLabel lbl
-            CJump op e1 e2 tLab fLab -> do
-                (skipLbl', v1, v2) <- calcOperands skipLbl e1 e2
-                let nextLab = if relop op v1 v2 then tLab else fLab
-                if isJust skipLbl'
-                   then pure skipLbl'
-                   else jumpLabel nextLab
-            Seq ss -> foldM runStmtM skipLbl ss
-            Label l
-              | Just skipLbl' <- skipLbl, skipLbl' == l -> pure Nothing
-              | otherwise                               -> pure skipLbl
+runStmtInterpreterM skipLblInit = void . runStmtM skipLblInit
 
-        runExprM :: Maybe Label -> Expr -> m f e (Maybe Label, Word e)
+runCFGInterpreterM :: ( FrameEmulator f e
+                      , MonadError InterpreterError (m f e)
+                      , MonadInterpret m f e
+                      )
+                   => Block
+                   -> m f e ()
+runCFGInterpreterM Block{..} = do
+    mapM_ (runStmtM Nothing) blockStmts
+    case blockNeighs of
+        OneNeigh n1 -> jumpLabel n1
+        _           -> error $ "block should have one neigh"
+
+runStmtM :: forall m f e. ( FrameEmulator f e
+                          , MonadError InterpreterError (m f e)
+                          , MonadInterpret m f e
+                          )
+         => Maybe Label
+         -> Stmt
+         -> m f e (Maybe Label)
+runStmtM skipStmtLbl stmt = withCurrentStmt stmt $ case stmt of
+    Move dst src -> move skipStmtLbl dst src
+    Expr e -> fst <$> runExprM skipStmtLbl e
+    Jump lbl
+      | isJust skipStmtLbl -> pure skipStmtLbl
+      | otherwise          -> jumpLabel lbl
+    CJump op e1 e2 tLab fLab -> do
+        (skipLbl', v1, v2) <- calcOperands skipStmtLbl e1 e2
+        let nextLab = if relop op v1 v2 then tLab else fLab
+        if isJust skipLbl'
+           then pure skipLbl'
+           else jumpLabel nextLab
+    Seq ss -> foldM runStmtM skipStmtLbl ss
+    Label l
+      | Just skipStmtLbl' <- skipStmtLbl, skipStmtLbl' == l -> pure Nothing
+      | otherwise                                           -> pure skipStmtLbl
+    Ret -> throwError EndOfFunction
+  where runExprM :: Maybe Label -> Expr -> m f e (Maybe Label, Word e)
         runExprM skipLbl = \case
             Const i  -> pure (skipLbl, fromIntegral i)
             Name lbl -> (skipLbl,) . fromIntegral <$> getLabelValue lbl
@@ -497,6 +545,7 @@ runInterpreterM skipLblInit stmtInit = void $ runStmtM skipLblInit stmtInit
             Le  -> (<=)
             Gt  -> (>)
             Ge  -> (>=)
+
 
 type LibFunc m f e = [Word e] -> m f e ()
 
