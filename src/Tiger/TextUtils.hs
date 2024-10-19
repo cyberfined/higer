@@ -1,5 +1,6 @@
 module Tiger.TextUtils
-    ( showNode
+    ( TextBuildable(..)
+    , showNode
     , showLeaf
     , showNodeNames
     , intercalate
@@ -14,8 +15,11 @@ import qualified Data.Text              as Text
 import qualified Data.Text.Lazy         as LazyText
 import qualified Data.Text.Lazy.Builder as Builder
 
+class TextBuildable a where
+    toTextBuilder :: a -> Builder
+
 showNode :: Builder -> [Builder -> Builder -> Builder] -> Builder -> Builder -> Builder
-showNode node = showNodeNames node . map (\x -> (Nothing,x))
+showNode node = showNodeNames node . map (Nothing,)
 
 showLeaf :: Builder -> Builder -> Builder -> Builder
 showLeaf s pr _ = pr <> s <> "\n"
@@ -23,7 +27,7 @@ showLeaf s pr _ = pr <> s <> "\n"
 showNodeNames :: Builder
               -> [(Maybe Builder, Builder -> Builder -> Builder)]
               -> Builder -> Builder -> Builder
-showNodeNames node xs pr cpr = pr <> node <> "\n" <> (showXs pr cpr)
+showNodeNames node xs pr cpr = pr <> node <> "\n" <> showXs pr cpr
   where showXs :: Builder -> Builder -> Builder
         showXs = snd (foldr (\a b -> (False, go a b)) (True, \_ _ -> "") xs)
 
@@ -40,7 +44,7 @@ showNodeNames node xs pr cpr = pr <> node <> "\n" <> (showXs pr cpr)
                                      then (goCpr <> "└── ", goCpr <> "    ")
                                      else (goCpr <> "├── ", goCpr <> "│   ")
                 showName name =  newPr <> name
-                              <> "\n" <> (pfunc (newCpr <> "└── ") (newCpr <> "    "))
+                              <> "\n" <> pfunc (newCpr <> "└── ") (newCpr <> "    ")
 
 intercalate :: Builder -> [Builder] -> Builder
 intercalate d (x:xs@(_:_)) = x <> d <> intercalate d xs

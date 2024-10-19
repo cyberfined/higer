@@ -1,10 +1,6 @@
 module Tiger.IR.Types
-    ( IRDataStmt
-    , IRDataCFG
-    , IRData(..)
+    ( IRData(..)
     , LabeledString(..)
-    , IRFunctionStmt
-    , IRFunctionCFG
     , IRFunction(..)
     , ControlFlowGraph(..)
     , Block(..)
@@ -19,6 +15,7 @@ module Tiger.IR.Types
     , notRelop
     ) where
 
+import           Data.Bifunctor       (Bifunctor (..))
 import           Data.Graph.Inductive (Gr, Node)
 import           Data.HashMap.Strict  (HashMap)
 import           Data.List.NonEmpty   (NonEmpty)
@@ -26,39 +23,42 @@ import           Data.Text            (Text)
 
 import qualified Tiger.Temp           as Temp
 
-type IRDataStmt f = IRData Stmt f
-
-type IRDataCFG f = IRData ControlFlowGraph f
-
 data IRData b f = IRData
     { irStrings   :: ![LabeledString]
     , irFunctions :: ![IRFunction b f]
-    }
+    } deriving Functor
+
+instance Bifunctor IRData where
+    bimap f g ir@IRData{..} = ir { irFunctions = map (bimap f g) irFunctions }
 
 data LabeledString = LabeledString
     { lStringValue :: !Text
     , lStringLabel :: !Temp.Label
     }
 
-type IRFunctionStmt f = IRFunction Stmt f
-
-type IRFunctionCFG f = IRFunction ControlFlowGraph f
-
 data IRFunction b f = IRFunction
     { irFuncBody  :: !b
     , irFuncFrame :: !f
-    }
+    } deriving Functor
 
-data ControlFlowGraph = ControlFlowGraph
-    { cfgGraph :: !(Gr Block ())
+instance Bifunctor IRFunction where
+    bimap f g IRFunction{..} = IRFunction { irFuncBody  = f irFuncBody
+                                          , irFuncFrame = g irFuncFrame
+                                          }
+
+data ControlFlowGraph s = ControlFlowGraph
+    { cfgGraph :: !(Gr (Block s) ())
     , cfgNodes :: !(HashMap Temp.Label Node)
     }
 
-data Block = Block
-    { blockStmts  :: ![Stmt]
+instance Functor ControlFlowGraph where
+    fmap f cfg@ControlFlowGraph{..} = cfg { cfgGraph = first (fmap f) cfgGraph }
+
+data Block s = Block
+    { blockStmts  :: ![s]
     , blockLabel  :: !Temp.Label
     , blockNeighs :: !Neighs
-    }
+    } deriving Functor
 
 data Neighs
     = ZeroNeighs

@@ -1,5 +1,3 @@
-{-# LANGUAGE ScopedTypeVariables #-}
-
 module Tiger.Translate
     ( MonadTranslate(..)
     , Level
@@ -59,7 +57,7 @@ class (Frame f, MonadTemp (m f), MonadUnique (m f)) => MonadTranslate m f where
     setCurrentLevel  :: Level f -> m f ()
     insertString     :: Text -> Label -> m f ()
     lookupString     :: Text -> m f (Maybe Label)
-    insertIRFunction :: IRFunctionStmt f -> m f ()
+    insertIRFunction :: IRFunction Stmt f -> m f ()
 
 data Level f = Level
     { levelUnique :: !Unique

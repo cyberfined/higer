@@ -1,8 +1,6 @@
 module Tiger.Temp
     ( Temp(..)
-    , tempBuilder
     , Label(..)
-    , labelBuilder
     , MonadTemp(..)
     , TempM
     , InitTemp(..)
@@ -15,34 +13,48 @@ import           Control.Monad.Reader       (MonadReader (..), ReaderT, asks, ru
 import           Data.Hashable              (Hashable (..))
 import           Data.IORef                 (IORef, newIORef, readIORef, writeIORef)
 import           Data.Text                  (Text)
-import           Data.Text.Lazy.Builder     (Builder, fromText)
+import           Data.Text.Lazy.Builder     (fromText)
 import           Data.Text.Lazy.Builder.Int (decimal)
 
-data Temp
-    = Temp !Int
-    | FP
-    | RV
-    deriving Eq
+import           Tiger.TextUtils
 
-tempBuilder :: Temp -> Builder
-tempBuilder (Temp t) = "t" <> decimal t
-tempBuilder FP       = "FP"
-tempBuilder RV       = "RV"
+data Temp
+    = FP
+    | RV
+    | Temp !Int
+    deriving stock Eq
+
+instance Enum Temp where
+    fromEnum = \case
+        FP     -> 0
+        RV     -> 1
+        Temp x -> 2 + x
+
+    toEnum x
+      | x == 0    = FP
+      | x == 1    = RV
+      | otherwise = Temp (x - 2)
+
+instance TextBuildable Temp where
+    toTextBuilder = \case
+        Temp t -> "t" <> decimal t
+        FP     -> "FP"
+        RV     -> "RV"
 
 data Label
     = LabelInt !Int
     | LabelText !Text
-    deriving Eq
-
+    deriving stock Eq
 
 instance Hashable Label where
     hashWithSalt salt = \case
         LabelInt i  -> hashWithSalt salt i
         LabelText s -> hashWithSalt salt s
 
-labelBuilder :: Label -> Builder
-labelBuilder (LabelInt l)  = "l" <> decimal l
-labelBuilder (LabelText l) = fromText l
+instance TextBuildable Label where
+    toTextBuilder = \case
+        LabelInt l  -> "l" <> decimal l
+        LabelText l -> fromText l
 
 class Monad m => MonadTemp m where
     newTemp :: m Temp

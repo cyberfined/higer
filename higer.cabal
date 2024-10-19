@@ -3,8 +3,8 @@ name:          higer
 version:       0.1.0.0
 synopsis:      Compiler for tiger language
 description:   Compiler for tiger language
-homepage:      https://ci.cyberfined.xyz/cyberfined/higer
-bug-reports:   https://ci.cyberfined.xyz/cyberfined/higer/issues
+homepage:      https://github.com/cyberfined/higer
+bug-reports:   https://github.com/cyberfined/higer
 author:        cyberfined
 maintainer:    cyberfined@protonmail.com
 copyright:     Copyright (c) cyberfined
@@ -18,11 +18,16 @@ extra-source-files:
 
 source-repository head
   type:     git
-  location: https://ci.cyberfined.xyz/cyberfined/higer
+  location: https://github.com/cyberfined/higer
 
 library
   exposed-modules:
       Tiger.Amd64
+    , Tiger.Amd64.Assem
+    , Tiger.RegMachine
+    , Tiger.Codegen.Assem
+    , Tiger.Codegen
+    , Tiger.DList
     , Tiger.EscapeAnalysis
     , Tiger.Expr
     , Tiger.Frame
@@ -33,19 +38,25 @@ library
     , Tiger.TextUtils    
     , Tiger.Unique
   other-modules:
-      Tiger.Amd64.Emulator
+      Tiger.Amd64.AsmPrinters.Gas
+    , Tiger.Amd64.Assem.Interpreter
+    , Tiger.Amd64.Assem.Types
+    , Tiger.Amd64.Codegen
+    , Tiger.Amd64.Emulator
+    , Tiger.Amd64.Frame.Linux
     , Tiger.Amd64.Frame
+    , Tiger.EnumMap
     , Tiger.IR.Canon
     , Tiger.IR.Interpreter
-    , Tiger.IR.Interpreter.Memory
     , Tiger.IR.Printer
     , Tiger.IR.Types
     , Tiger.Semant.LibFunctions
     , Tiger.Semant.Type
     , Tiger.Translate
+    , Tiger.RegMachine.Memory
   hs-source-dirs:
       src
-  ghc-options: -Wall
+  ghc-options: -Wall -fno-warn-orphans
   build-depends:
       base >= 4.7 && < 5
     , containers >= 0.6 && < 1
@@ -60,21 +71,27 @@ library
     , vector >= 0.13 && < 1
     , vector-hashtables >= 0.1 && < 1
   default-extensions:
-      DerivingStrategies
+      ConstraintKinds
+    , DeriveFunctor
+    , DerivingStrategies
+    , DerivingVia
     , FlexibleContexts
     , FlexibleInstances
+    , GADTs
     , GeneralizedNewtypeDeriving
+    , InstanceSigs
     , LambdaCase
     , MultiParamTypeClasses
     , OverloadedStrings
+    , TypeFamilies
     , RecordWildCards
+    , ScopedTypeVariables
+    , StandaloneDeriving
     , TypeApplications
     , TupleSections
   other-extensions:
-      ConstraintKinds
-    , FlexibleContexts
-    , ScopedTypeVariables
-    , TypeFamilies
+      DataKinds
+    , FunctionalDependencies
   default-language: Haskell2010
 
 executable higer

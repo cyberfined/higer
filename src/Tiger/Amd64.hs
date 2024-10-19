@@ -1,7 +1,12 @@
 module Tiger.Amd64
-    ( Frame
-    , Emulator
+    ( LinuxFrame
+    , IREmulator
+    , TempRegEmulator
+    , Gas(..)
+    , module Tiger.Amd64.Assem
     ) where
 
-import           Tiger.Amd64.Emulator (Emulator)
-import           Tiger.Amd64.Frame    (Frame)
+import           Tiger.Amd64.AsmPrinters.Gas (Gas (..))
+import           Tiger.Amd64.Assem
+import           Tiger.Amd64.Emulator        (IREmulator, TempRegEmulator)
+import           Tiger.Amd64.Frame.Linux     (LinuxFrame)

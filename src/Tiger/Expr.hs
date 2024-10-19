@@ -13,7 +13,6 @@ module Tiger.Expr
     , Span(..)
     , Position(..)
 
-    , exprToText
     , exprSpan
     , setExprSpan
     , lValSpan
@@ -28,7 +27,6 @@ import           Prelude                    hiding (span)
 import           Tiger.TextUtils
 
 import qualified Data.List.NonEmpty         as NonEmpty
-import qualified Data.Text.Lazy             as LazyText
 import qualified Data.Text.Lazy.Builder     as Builder
 import qualified Data.Text.Lazy.Builder.Int as Builder
 
@@ -137,119 +135,116 @@ setLValSpan s = \case
     Dot l f _   -> Dot l f s
     Index l i _ -> Index l i s
 
-exprToText :: Expr -> LazyText.Text
-exprToText = Builder.toLazyText . exprBuilder
+instance TextBuildable Expr where
+    toTextBuilder e = exprBuilder' e "" ""
+      where exprBuilder' :: Expr -> Builder -> Builder -> Builder
+            exprBuilder' = \case
+                LVal lv      -> lValBuilder lv
+                Nil _        -> showLeaf "nil"
+                IntLit int _ -> showLeaf $ Builder.decimal int
+                StrLit str _ -> showLeaf $ stringBuilder str
+                Neg e1 _     -> showNode "-" [exprBuilder' e1]
+                Binop e1 op e2 _ -> showNode (binopBuilder op) [ exprBuilder' e1
+                                                               , exprBuilder' e2
+                                                               ]
+                Record r fs _ -> showNodeNames (Builder.fromText r <> "{}") $
+                    map fieldBuilder fs
+                Array a e1 e2 _ -> showNode (Builder.fromText a <> "[]") [ exprBuilder' e1
+                                                                         , exprBuilder' e2
+                                                                         ]
+                Assign lv rv _ -> showNode ":=" [lValBuilder lv, exprBuilder' rv]
+                If cond th mel _ ->
+                    let initNodes = maybe [] (\el -> [(Just "else", exprBuilder' el)]) mel
+                        nodes = (Nothing, exprBuilder' cond)
+                              : (Just "then", exprBuilder' th)
+                              : initNodes
+                    in showNodeNames "if" nodes
+                While e1 e2 _ -> showNodeNames "while" [ (Just "do", exprBuilder' e1)
+                                                       , (Just "body", exprBuilder' e2)
+                                                       ]
+                For var esc e1 e2 e3 _ -> showNodeNames "for"
+                    [ (Just "var", showLeaf $ Builder.fromText var <> escapingBuilder esc)
+                    , (Just "from", exprBuilder' e1)
+                    , (Just "to", exprBuilder' e2)
+                    , (Just "do", exprBuilder' e3)
+                    ]
+                Seq es _ -> showNode ";" $ map exprBuilder' es
+                Call fn as _ -> showNode (Builder.fromText fn <> "()") $ map exprBuilder' as
+                Break _ -> showLeaf "break"
+                Let ds res _ ->
+                    let initNodes = [(Just "in", exprBuilder' res)]
+                        nodes = foldr (\x acc -> (Nothing, decBuilder x) : acc) initNodes ds
+                    in showNodeNames "let" nodes
 
-exprBuilder :: Expr -> Builder
-exprBuilder e = exprBuilder' e "" ""
-  where exprBuilder' :: Expr -> Builder -> Builder -> Builder
-        exprBuilder' = \case
-            LVal lv      -> lValBuilder lv
-            Nil _        -> showLeaf "nil"
-            IntLit int _ -> showLeaf $ Builder.decimal int
-            StrLit str _ -> showLeaf $ stringBuilder str
-            Neg e1 _     -> showNode "-" [exprBuilder' e1]
-            Binop e1 op e2 _ -> showNode (binopBuilder op) [ exprBuilder' e1
-                                                           , exprBuilder' e2
-                                                           ]
-            Record r fs _ -> showNodeNames (Builder.fromText r <> "{}") $
-                map fieldBuilder fs
-            Array a e1 e2 _ -> showNode (Builder.fromText a <> "[]") [ exprBuilder' e1
-                                                                     , exprBuilder' e2
-                                                                     ]
-            Assign lv rv _ -> showNode ":=" [lValBuilder lv, exprBuilder' rv]
-            If cond th mel _ ->
-                let initNodes = maybe [] (\el -> [(Just "else", exprBuilder' el)]) mel
-                    nodes = (Nothing, exprBuilder' cond)
-                          : (Just "then", exprBuilder' th)
-                          : initNodes
-                in showNodeNames "if" nodes
-            While e1 e2 _ -> showNodeNames "while" [ (Just "do", exprBuilder' e1)
-                                                   , (Just "body", exprBuilder' e2)
-                                                   ]
-            For var esc e1 e2 e3 _ -> showNodeNames "for" $
-                [ (Just "var", showLeaf $ Builder.fromText var <> escapingBuilder esc)
-                , (Just "from", exprBuilder' e1)
-                , (Just "to", exprBuilder' e2)
-                , (Just "do", exprBuilder' e3)
-                ]
-            Seq es _ -> showNode ";" $ map exprBuilder' es
-            Call fn as _ -> showNode (Builder.fromText fn <> "()") $ map exprBuilder' as
-            Break _ -> showLeaf "break"
-            Let ds res _ ->
-                let initNodes = [(Just "in", exprBuilder' res)]
-                    nodes = foldr (\x acc -> (Nothing, decBuilder x) : acc) initNodes ds
-                in showNodeNames "let" nodes
+            lValBuilder :: LVal -> Builder -> Builder -> Builder
+            lValBuilder lv = case lv of
+                Var v _        -> showLeaf (Builder.fromText v)
+                Dot x y _      -> showNode "." [lValBuilder x, showLeaf (Builder.fromText y)]
+                Index x expr _ -> showNode "[]" [lValBuilder x, exprBuilder' expr]
 
-        lValBuilder :: LVal -> Builder -> Builder -> Builder
-        lValBuilder lv = case lv of
-            Var v _        -> showLeaf (Builder.fromText v)
-            Dot x y _      -> showNode "." [lValBuilder x, showLeaf (Builder.fromText y)]
-            Index x expr _ -> showNode "[]" [lValBuilder x, exprBuilder' expr]
+            decBuilder :: Dec -> Builder -> Builder -> Builder
+            decBuilder = \case
+                TypeDecs decs -> showNode "types" $ NonEmpty.toList $ fmap typeDecBuilder decs
+                VarDec var mtyp val esc _ ->
+                    let varBuilder =  Builder.fromText var
+                                   <> maybe "" (\typ -> " : " <> Builder.fromText typ) mtyp
+                                   <> escapingBuilder esc
+                    in showNode ":=" [showLeaf varBuilder, exprBuilder' val]
+                FunDecs decs -> showNode "funcs" $ NonEmpty.toList $ fmap funDecBuilder decs
 
-        decBuilder :: Dec -> Builder -> Builder -> Builder
-        decBuilder = \case
-            TypeDecs decs -> showNode "types" $ NonEmpty.toList $ fmap typeDecBuilder decs
-            VarDec var mtyp val esc _ ->
-                let varBuilder =  Builder.fromText var
-                               <> maybe "" (\typ -> " : " <> Builder.fromText typ) mtyp
-                               <> escapingBuilder esc
-                in showNode ":=" [showLeaf varBuilder, exprBuilder' val]
-            FunDecs decs -> showNode "funcs" $ NonEmpty.toList $ fmap funDecBuilder decs
+            typeDecBuilder :: TypeDec -> Builder -> Builder -> Builder
+            typeDecBuilder TypeDec{..} = showNode (Builder.fromText typeName)
+                [typeBodyBuilder typeBody]
 
-        typeDecBuilder :: TypeDec -> Builder -> Builder -> Builder
-        typeDecBuilder TypeDec{..} = showNode (Builder.fromText typeName)
-            [typeBodyBuilder typeBody]
+            typeBodyBuilder :: TypeDecBody -> Builder -> Builder -> Builder
+            typeBodyBuilder = \case
+                TypeAlias typ _ -> showLeaf (Builder.fromText typ)
+                RecordType fs _ -> showLeaf $ "{" <> recFieldsBuilder fs <> "}"
+                ArrayType typ _ -> showLeaf $ Builder.fromText typ <> "[]"
 
-        typeBodyBuilder :: TypeDecBody -> Builder -> Builder -> Builder
-        typeBodyBuilder = \case
-            TypeAlias typ _ -> showLeaf (Builder.fromText typ)
-            RecordType fs _ -> showLeaf $ "{" <> recFieldsBuilder fs <> "}"
-            ArrayType typ _ -> showLeaf $ Builder.fromText typ <> "[]"
+            funDecBuilder :: FunDec -> Builder -> Builder -> Builder
+            funDecBuilder FunDec{..} =
+                let funText =  Builder.fromText funName
+                            <> "(" <> decFieldsBuilder funArgs <> ")"
+                            <> maybe "" (\res -> ": " <> Builder.fromText res) funResult
+                in showNode funText [exprBuilder' funBody]
 
-        funDecBuilder :: FunDec -> Builder -> Builder -> Builder
-        funDecBuilder FunDec{..} =
-            let funText =  Builder.fromText funName
-                        <> "(" <> decFieldsBuilder funArgs <> ")"
-                        <> maybe "" (\res -> ": " <> Builder.fromText res) funResult
-            in showNode funText [exprBuilder' funBody]
+            decFieldsBuilder :: [DecField] -> Builder
+            decFieldsBuilder = intercalate ", " . map decFieldBuilder
+              where decFieldBuilder DecField{..} = Builder.fromText decFieldName <> " : "
+                                                <> Builder.fromText decFieldType
+                                                <> escapingBuilder decFieldEscape
 
-        decFieldsBuilder :: [DecField] -> Builder
-        decFieldsBuilder = intercalate ", " . map decFieldBuilder
-          where decFieldBuilder DecField{..} = Builder.fromText decFieldName <> " : "
-                                            <> Builder.fromText decFieldType
-                                            <> escapingBuilder decFieldEscape
+            recFieldsBuilder :: [RecordField] -> Builder
+            recFieldsBuilder = intercalate ", " . map recFieldBuilder
+              where recFieldBuilder RecordField{..} =  Builder.fromText recFieldName
+                                                    <> " : "
+                                                    <> Builder.fromText recFieldType
 
-        recFieldsBuilder :: [RecordField] -> Builder
-        recFieldsBuilder = intercalate ", " . map recFieldBuilder
-          where recFieldBuilder RecordField{..} =  Builder.fromText recFieldName
-                                                <> " : "
-                                                <> Builder.fromText recFieldType
+            binopBuilder :: Binop -> Builder
+            binopBuilder = \case
+                Add -> "+"
+                Sub -> "-"
+                Mul -> "*"
+                Div -> "/"
+                Lt  -> "<"
+                Le  -> "<="
+                Gt  -> ">"
+                Ge  -> ">="
+                Ne  -> "<>"
+                Eq  -> "="
+                And -> "&"
+                Or  -> "|"
 
-        binopBuilder :: Binop -> Builder
-        binopBuilder = \case
-            Add -> "+"
-            Sub -> "-"
-            Mul -> "*"
-            Div -> "/"
-            Lt  -> "<"
-            Le  -> "<="
-            Gt  -> ">"
-            Ge  -> ">="
-            Ne  -> "<>"
-            Eq  -> "="
-            And -> "&"
-            Or  -> "|"
+            fieldBuilder :: Field -> (Maybe Builder, Builder -> Builder -> Builder)
+            fieldBuilder Field{..} = ( Just $ Builder.fromText fieldName
+                                     , exprBuilder' fieldValue
+                                     )
 
-        fieldBuilder :: Field -> (Maybe Builder, Builder -> Builder -> Builder)
-        fieldBuilder Field{..} = ( Just $ Builder.fromText fieldName
-                                 , exprBuilder' fieldValue
-                                 )
-
-        escapingBuilder :: Escaping -> Builder
-        escapingBuilder = \case
-            Escaping  -> " [escaping]"
-            Remaining -> ""
+            escapingBuilder :: Escaping -> Builder
+            escapingBuilder = \case
+                Escaping  -> " [escaping]"
+                Remaining -> ""
 
 data LVal
     = Var !Text !Span

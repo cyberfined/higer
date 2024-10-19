@@ -1,5 +1,3 @@
-{-# LANGUAGE ScopedTypeVariables #-}
-
 module Tiger.Semant
     ( Type(..)
     , SemantException(..)
@@ -29,8 +27,8 @@ import           Prelude                   hiding (exp, span)
 import           Tiger.EscapeAnalysis      (EscapeAnalysisResult, getEscapeAnalysisResult)
 import           Tiger.Expr
 import           Tiger.Frame               (Frame)
-import           Tiger.IR.Types            (IR, IRData (..), IRDataStmt, IRFunctionStmt,
-                                            LabeledString (..))
+import           Tiger.IR.Types            (IR, IRData (..), IRFunction,
+                                            LabeledString (..), Stmt)
 import           Tiger.Semant.LibFunctions (LibFunction (..))
 import           Tiger.Semant.Type
 import           Tiger.Temp
@@ -65,7 +63,7 @@ data Context f = Context
     , ctxLoopEndLabel :: !(IORef (Maybe Label))
     , ctxCurrentLevel :: !(IORef (Level f))
     , ctxStrings      :: !(HashTable Text Label)
-    , ctxIRFuncs      :: !(IORef [IRFunctionStmt f])
+    , ctxIRFuncs      :: !(IORef [IRFunction Stmt f])
     }
 
 data EnvEntry f
@@ -232,7 +230,7 @@ class (Frame f, MonadError SemantException (m f), MonadUnique (m f)) => MonadSem
 semantAnalyze :: forall f m. (Frame f, MonadIO m, MonadTemp m)
               => FilePath
               -> EscapeAnalysisResult
-              -> m (Either PosedSemantException (IRDataStmt f))
+              -> m (Either PosedSemantException (IRData Stmt f))
 semantAnalyze file expr = do
     uniqueRef <- liftIO $ newIORef (Unique 0)
     envsRef <- liftIO $ newIORef [(libFunctions, initTypes)]

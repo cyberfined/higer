@@ -22,7 +22,9 @@ import qualified Data.List.NonEmpty   as NonEmpty
 import qualified Tiger.Frame          as Frame
 import qualified Tiger.Temp           as Temp
 
-canonicalize :: (Frame f, MonadTemp m) => IRDataStmt f -> m (IRDataCFG f)
+canonicalize :: (Frame f, MonadTemp m)
+             => IRData Stmt f
+             -> m (IRData (ControlFlowGraph Stmt) f)
 canonicalize IRData{..} = do
     cfgFunctions <- forM irFunctions $ \IRFunction{..} -> do
         let funName = Frame.frameName irFuncFrame
@@ -44,7 +46,7 @@ linearize = fmap (linearize' []) . reorderStmt
             Seq xs -> foldr (flip linearize') stmts xs
             stmt   -> stmt : stmts
 
-basicBlocks :: Temp.Label -> [Stmt] -> [Block]
+basicBlocks :: Temp.Label -> [Stmt] -> [Block Stmt]
 basicBlocks funName = basicBlocks' [] (Block [] funName ZeroNeighs)
   where basicBlocks' blocks block@Block{..} (s:ss) = case s of
             Label l
@@ -75,12 +77,12 @@ basicBlocks funName = basicBlocks' [] (Block [] funName ZeroNeighs)
 
 data DfsResult = DfsResult
     { dfsLen       :: !Int
-    , dfsTrace     :: ![Block]
-    , dfsTraces    :: ![[Block]]
-    , dfsBlocksMap :: !(HashMap Temp.Label Block)
+    , dfsTrace     :: ![Block Stmt]
+    , dfsTraces    :: ![[Block Stmt]]
+    , dfsBlocksMap :: !(HashMap Temp.Label (Block Stmt))
     }
 
-getTraces :: [Block] -> [[Block]]
+getTraces :: [Block Stmt] -> [[Block Stmt]]
 getTraces blocks = case blocks of
     (b : _) -> let res = dfsBlock initBlocksMap [] b
                in dfsTrace res : dfsTraces res
@@ -88,7 +90,10 @@ getTraces blocks = case blocks of
   where insertBlock blocksMap block@Block{..} = HashMap.insert blockLabel block blocksMap
         initBlocksMap = foldl insertBlock HashMap.empty blocks
 
-        dfsBlock :: HashMap Temp.Label Block -> [[Block]] -> Block -> DfsResult
+        dfsBlock :: HashMap Temp.Label (Block Stmt)
+                 -> [[Block Stmt]]
+                 -> Block Stmt
+                 -> DfsResult
         dfsBlock blocksMap traces b@Block{..} = case blockNeighs of
             ZeroNeighs -> zeroNeighs
             OneNeigh l
@@ -98,15 +103,19 @@ getTraces blocks = case blocks of
           where zeroNeighs = DfsResult 0 [b] traces blocksMap'
                 blocksMap' = HashMap.delete blockLabel blocksMap
 
-        oneNeigh :: HashMap Temp.Label Block -> [[Block]] -> Block -> Block -> DfsResult
+        oneNeigh :: HashMap Temp.Label (Block Stmt)
+                 -> [[Block Stmt]]
+                 -> Block Stmt
+                 -> Block Stmt
+                 -> DfsResult
         oneNeigh blocksMap traces prevBlock curBlock = result
           where result = DfsResult (dfsLen + 1) trace' dfsTraces dfsBlocksMap
                 DfsResult{..} = dfsBlock blocksMap traces curBlock
                 trace' = prevBlock : dfsTrace
 
-        twoNeighs :: HashMap Temp.Label Block
-                  -> [[Block]]
-                  -> Block
+        twoNeighs :: HashMap Temp.Label (Block Stmt)
+                  -> [[Block Stmt]]
+                  -> Block Stmt
                   -> Temp.Label
                   -> Temp.Label
                   -> DfsResult
@@ -139,7 +148,7 @@ getTraces blocks = case blocks of
                            , dfsTrace = prevBlock : dfsTrace maxRes
                            }
 
-createControlFlowGraph :: [[Block]] -> ControlFlowGraph
+createControlFlowGraph :: [[Block Stmt]] -> ControlFlowGraph Stmt
 createControlFlowGraph traces = ControlFlowGraph {..}
   where cfgNodes = fst $ foldl numberTrace (HashMap.empty, 0) traces
         cfgGraph = fst $ foldl insertTrace (Graph.empty, 0) traces
@@ -156,11 +165,11 @@ createControlFlowGraph traces = ControlFlowGraph {..}
                                        , ((), fromJust $ HashMap.lookup n2 cfgNodes)
                                        ]
 
-reduceBasicBlocks :: MonadTemp m => [[Block]] -> m [[Block]]
+reduceBasicBlocks :: MonadTemp m => [[Block Stmt]] -> m [[Block Stmt]]
 reduceBasicBlocks traces = do
     (traces', usedLabels) <- reduceJumpsInTraces traces HashSet.empty
     pure $ map (reduceBasicBlocks' usedLabels . map reverseBlock) traces'
-  where reduceBasicBlocks' :: HashSet Temp.Label -> [Block] -> [Block]
+  where reduceBasicBlocks' :: HashSet Temp.Label -> [Block Stmt] -> [Block Stmt]
         reduceBasicBlocks' usedLabels (b1 : b2 : bs)
           | HashSet.member (blockLabel b2) usedLabels
           = b1 : reduceBasicBlocks' usedLabels (b2 : bs)
@@ -176,22 +185,22 @@ reduceBasicBlocks traces = do
         reduceBasicBlocks' _ bs = bs
 
         reduceJumpsInTraces :: MonadTemp m
-                            => [[Block]]
+                            => [[Block Stmt]]
                             -> HashSet Temp.Label
-                            -> m ([[Block]], HashSet Temp.Label)
+                            -> m ([[Block Stmt]], HashSet Temp.Label)
         reduceJumpsInTraces (t : ts) ls = do
             (t', ls') <- reduceJumps t ls
             (ts', ls'') <- reduceJumpsInTraces ts ls'
             pure (t' : ts', ls'')
         reduceJumpsInTraces ts ls = pure (ts, ls)
 
-        reverseBlock :: Block -> Block
+        reverseBlock :: Block Stmt -> Block Stmt
         reverseBlock b = b { blockStmts = reverse $ blockStmts b }
 
 reduceJumps :: MonadTemp m
-            => [Block]
+            => [Block Stmt]
             -> HashSet Temp.Label
-            -> m ([Block], HashSet Temp.Label)
+            -> m ([Block Stmt], HashSet Temp.Label)
 reduceJumps (b1 : bs@(b2 : _)) usedLabels = case blockStmts b1 of
     (Jump{} : stmts) -> do
         (restBlocks, usedLabels') <- reduceJumps bs usedLabels

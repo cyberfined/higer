@@ -1,6 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables #-}
-
-module Tiger.IR.Interpreter.Memory
+module Tiger.RegMachine.Memory
     ( Memory
     , memoryBaseAddr
     , newMemory
