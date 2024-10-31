@@ -44,7 +44,7 @@ infixl 5 <|, |>
 {-# INLINE (<|) #-}
 
 snoc :: DList a -> a -> DList a
-snoc (DList xs) x = DList (xs . (++[x]))
+snoc (DList xs) x = DList (xs . (x:))
 {-# INLINE snoc #-}
 
 (|>) :: DList a -> a -> DList a

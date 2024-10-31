@@ -1,5 +1,6 @@
 module ParserTests (tests) where
 
+import           Control.Monad    (void)
 import           Data.Text        (Text)
 import           Prelude          hiding (and, break, div, exp, or, rem, seq, span)
 import           Test.Tasty
@@ -401,12 +402,7 @@ failure name src = testCase name $ do
 successFile :: TestName -> FilePath -> TestTree
 successFile name path = testCase name $ do
     src <- Text.readFile path
-    case parse path src of
-        Left err -> assertFailure $  "unexpected parsing error `"
-                                  ++ path
-                                  ++ "`:\n"
-                                  ++ Text.unpack err
-        Right _  -> pure ()
+    void $ genericParser path src
 
 failureFile :: TestName -> FilePath -> TestTree
 failureFile name path = testCase name $ do

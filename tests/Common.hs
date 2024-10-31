@@ -42,14 +42,43 @@ module Common
     , funDec
     , decField
     , recField
+    , genericParser
+    , genericSemant
+    , genericCompileToIR
+    , genericCanonicalizeIR
+    , genericCodegen
+    , runInterpreter
     ) where
 
-import           Data.Text          (Text)
-import           Prelude            hiding (and, break, div, or, rem, seq, span)
-import           Tiger.Expr
+import           Control.Monad          ((>=>))
+import           Control.Monad.IO.Class (MonadIO (..))
+import           Data.Proxy             (Proxy (..))
+import           Data.Text              (Text)
+import           Data.Typeable          (Typeable)
+import           Prelude                hiding (and, break, div, or, rem, seq, span)
+import           Test.Tasty.HUnit
 
-import qualified Data.List.NonEmpty as NonEmpty
-import qualified Data.Text.Lazy     as LazyText
+import           Tiger.Codegen          (Instruction, TempReg)
+import           Tiger.EscapeAnalysis   (escapeAnalyze)
+import           Tiger.Expr
+import           Tiger.Frame            (Frame, Instr, Reg, codegen)
+import           Tiger.IR               (ControlFlowGraph (..), IRData (..), Stmt,
+                                         canonicalize)
+import           Tiger.Parser           (parse)
+import           Tiger.RegMachine       (FrameEmulator, FrameRegister (..), Interpretable,
+                                         InterpreterResult (..), ReturnRegister (..),
+                                         newEmulator)
+import           Tiger.Semant           (PosedSemantException (..), posedExceptionToText,
+                                         semantAnalyze)
+import           Tiger.Temp             (InitLabel (..), InitTemp (..), TempM, runTempM)
+import           Tiger.TextUtils        (TextBuildable (..))
+
+import qualified Data.List.NonEmpty     as NonEmpty
+import qualified Data.Text              as Text
+import qualified Data.Text.Lazy         as LazyText
+import qualified Data.Text.Lazy.Builder as Builder
+
+import qualified Tiger.RegMachine       as RegMachine
 
 newtype EqExpr = EqExpr { unEqExpr :: Expr }
 
@@ -91,7 +120,7 @@ instance Eq EqExpr where
         _                                            -> False
 
 instance Show EqExpr where
-    show = LazyText.unpack . exprToText . unEqExpr
+    show = LazyText.unpack . Builder.toLazyText . toTextBuilder . unEqExpr
 
 newtype EqLVal = EqLVal LVal
 
@@ -296,3 +325,77 @@ decField n e t = DecField n e t span
 
 recField :: Text -> Text -> RecordField
 recField n t = RecordField n t span
+
+genericParser :: FilePath -> Text -> IO Expr
+genericParser path src = case parse path src of
+    Left err   -> assertFailure $  "unexpected parsing error `"
+                                ++ path
+                                ++ ":`\n"
+                                ++ Text.unpack err
+    Right expr -> pure expr
+
+genericSemant :: forall f a. Frame f
+           => FilePath
+           -> Text
+           -> Proxy f
+           -> (Either PosedSemantException (Expr, IRData Stmt f) -> TempM a)
+           -> IO a
+genericSemant path src _ cont = do
+    expr <- genericParser path src
+    escapeResult <- escapeAnalyze expr
+    runTempM (InitTemp 0) (InitLabel 0) $
+        semantAnalyze @f path escapeResult >>= cont . fmap (expr,)
+
+genericCompileToIR :: Frame f
+                   => Text
+                   -> Proxy f
+                   -> (IRData Stmt f -> TempM a)
+                   -> IO a
+genericCompileToIR src prxy cont = genericSemant "test.tig" src prxy $ \case
+    Left err      -> liftIO $ assertFailure $  "unexpected type error `"
+                                            ++ Text.unpack (posedExceptionToText err)
+    Right (_, ir) -> cont ir
+
+genericCanonicalizeIR :: Frame f
+                      => Text
+                      -> Proxy f
+                      -> (IRData (ControlFlowGraph Stmt) f -> TempM a)
+                      -> IO a
+genericCanonicalizeIR src prxy cont = genericCompileToIR src prxy (canonicalize >=> cont)
+
+genericCodegen :: ( Frame f
+                  , Instruction (Instr f) (TempReg (Reg f))
+                  , Instruction (Instr f) (Reg f)
+                  )
+               => Text
+               -> Proxy f
+               -> (IRData (ControlFlowGraph (Instr f (TempReg (Reg f)))) f -> TempM a)
+               -> IO a
+genericCodegen src prxy cont = genericCanonicalizeIR src prxy (codegen >=> cont)
+
+runInterpreter :: forall f e r s b. ( Typeable r
+                                    , Enum r
+                                    , TextBuildable r
+                                    , Typeable s
+                                    , TextBuildable s
+                                    , FrameEmulator f e r s
+                                    , Interpretable f e r s b
+                                    )
+               => ReturnRegister r
+               -> FrameRegister r
+               -> Proxy e
+               -> IRData b f
+               -> Text
+               -> IO (InterpreterResult r s)
+runInterpreter rv fp _ ir input = do
+    emu <- newEmulator @e (Proxy @f)
+    res <- RegMachine.runInterpreter rv fp emu ir input
+    case resError res of
+        Just err -> assertFailure $  "unexpected IR interpreter error \n"
+                                  ++ "input: "
+                                  ++ Text.unpack input
+                                  ++ "\noutput: "
+                                  ++ LazyText.unpack (resOutput res)
+                                  ++ "\nError: "
+                                  ++ show err
+        Nothing  -> pure res

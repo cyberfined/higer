@@ -2,24 +2,21 @@
 
 module TypeCheckerTests (tests) where
 
-import           Data.Text            (Text)
+import           Data.Proxy       (Proxy (..))
+import           Data.Text        (Text)
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
 import           Common
-import           Tiger.Expr           (Expr)
-import           Tiger.Parser         (parse)
-import           Tiger.Semant         (PosedSemantException (..), SemantException (..),
-                                       Type (..), exceptionToText, posedExceptionToText,
-                                       semantAnalyze)
-import           Tiger.Temp           (InitLabel (..), InitTemp (..), runTempM)
-import           Tiger.Unique         (Unique (..))
+import           Tiger.Expr       (Expr)
+import           Tiger.Semant     (PosedSemantException (..), SemantException (..),
+                                   Type (..), exceptionToText, posedExceptionToText)
+import           Tiger.Unique     (Unique (..))
 
-import qualified Data.Text            as Text
-import qualified Data.Text.IO         as Text
+import qualified Data.Text        as Text
+import qualified Data.Text.IO     as Text
 
-import qualified Tiger.Amd64          as Amd64
-import           Tiger.EscapeAnalysis (escapeAnalyze)
+import qualified Tiger.Amd64      as Amd64
 
 tests :: TestTree
 tests = testGroup "Type checker tests"
@@ -212,14 +209,4 @@ successFile name path = testCase name $ do
 runSemantAnalyzer :: FilePath -> IO (Either PosedSemantException Expr)
 runSemantAnalyzer path = do
     src <- Text.readFile path
-    case parse path src of
-        Left err -> assertFailure $  "unexpected parsing error `"
-                                  ++ path
-                                  ++ ":`\n"
-                                  ++ Text.unpack err
-        Right expr -> do
-            escapeResult <- escapeAnalyze expr
-            runTempM (InitTemp 0) (InitLabel 0) $
-                semantAnalyze @Amd64.Frame path escapeResult >>= \case
-                    Left err -> pure (Left err)
-                    Right _  -> pure (Right expr)
+    genericSemant path src (Proxy @Amd64.LinuxFrame) (pure . fmap fst)

@@ -3,6 +3,7 @@ module Tiger.IR.Types
     , LabeledString(..)
     , IRFunction(..)
     , ControlFlowGraph(..)
+    , insertFirstCFGNode
     , Block(..)
     , Neighs(..)
     , removeNeigh
@@ -20,6 +21,9 @@ import           Data.Graph.Inductive (Gr, Node)
 import           Data.HashMap.Strict  (HashMap)
 import           Data.List.NonEmpty   (NonEmpty)
 import           Data.Text            (Text)
+
+import qualified Data.Graph.Inductive as Graph
+import qualified Data.HashMap.Strict  as HashMap
 
 import qualified Tiger.Temp           as Temp
 
@@ -53,6 +57,37 @@ data ControlFlowGraph s = ControlFlowGraph
 
 instance Functor ControlFlowGraph where
     fmap f cfg@ControlFlowGraph{..} = cfg { cfgGraph = first (fmap f) cfgGraph }
+
+insertFirstCFGNode :: ControlFlowGraph s -> [s] -> Temp.Label -> ControlFlowGraph s
+insertFirstCFGNode cfg@ControlFlowGraph{..} stmts label
+  | Just oldBlock <- mOldBlock =
+      let nodesMap = HashMap.insert label 0
+                   $ HashMap.insert (blockLabel oldBlock) newNodeId cfgNodes
+      in ControlFlowGraph { cfgGraph = newCfgGraph
+                          , cfgNodes = nodesMap
+                          }
+  | otherwise = cfg
+  where insertNode (n@(nodeId, oldBlock):ns) nodes
+          | nodeId == 0 =
+              let newBlock = Block { blockStmts  = stmts
+                                   , blockLabel  = label
+                                   , blockNeighs = OneNeigh (blockLabel oldBlock)
+                                   }
+                  n1 = (0, newBlock)
+                  n2 = (newNodeId, oldBlock)
+              in (n1 : n2 : ns, Just oldBlock)
+          | otherwise   = insertNode ns (n:nodes)
+        insertNode _ nodes = (nodes, Nothing)
+
+        newCfgGraph = Graph.mkGraph newNodes newEdges
+        newEdges = (0, newNodeId, ())
+                 : map ((\(x, y) -> (x, y, ())) . bimap subst subst) (Graph.edges cfgGraph)
+        (newNodes, mOldBlock) = insertNode (Graph.labNodes cfgGraph) []
+
+        subst nodeId
+          | nodeId == 0 = newNodeId
+          | otherwise   = nodeId
+        newNodeId = snd (Graph.nodeRange cfgGraph) + 1
 
 data Block s = Block
     { blockStmts  :: ![s]

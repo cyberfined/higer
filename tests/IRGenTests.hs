@@ -1,32 +1,25 @@
-{-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
 module IRGenTests (tests) where
 
-import           Control.Monad        (forM_)
-import           Data.List            (find)
-import           Data.Maybe           (fromJust)
-import           Data.Proxy           (Proxy (..))
-import           Data.Text            (Text)
+import           Control.Monad    (forM_)
+import           Data.List        (find)
+import           Data.Maybe       (fromJust)
+import           Data.Proxy       (Proxy (..))
+import           Data.Text        (Text)
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
-import           BackendTestCases     (Input (..), TestCase (..), itoaSrc, testCases)
-import           Tiger.EscapeAnalysis (escapeAnalyze)
-import           Tiger.Frame          (Access (..), Frame (..))
-import           Tiger.IR             (FrameEmulator, IRData (..), IRDataStmt,
-                                       IRFunction (..), InterpreterResult (..),
-                                       newEmulator)
-import           Tiger.Parser         (parse)
-import           Tiger.Semant         (posedExceptionToText, semantAnalyze)
-import           Tiger.Temp           (InitLabel (..), InitTemp (..), Label (..),
-                                       runTempM)
+import           BackendTestCases (Input (..), TestCase (..), itoaSrc, testCases)
+import           Common           (genericCompileToIR, runInterpreter)
+import           Tiger.Frame      (Access (..), Frame (..))
+import           Tiger.IR         (IRData (..), IRFunction (..), Stmt)
+import           Tiger.RegMachine (FrameEmulator, FrameRegister (..),
+                                   InterpreterResult (..), ReturnRegister (..))
+import           Tiger.Temp       (Label (..), Temp)
 
-import qualified Data.Text            as Text
-import qualified Data.Text.Lazy       as LazyText
+import qualified Data.Text        as Text
 
-import qualified Tiger.Amd64          as Amd64
-import qualified Tiger.IR             as IR
+import qualified Tiger.Amd64      as Amd64
+import qualified Tiger.Temp       as Temp
 
 tests :: TestTree
 tests = testGroup "IR generation tests"
@@ -41,11 +34,11 @@ amd64Tests = testGroup "AMD64 tests"
 
 amd64GenericTests :: TestTree
 amd64GenericTests = runTestCases "generic tests"
-    (Proxy @Amd64.Frame) (Proxy @Amd64.Emulator)
+    (Proxy @Amd64.LinuxFrame) (Proxy @Amd64.IREmulator)
 
 amd64SpecificTests :: TestTree
 amd64SpecificTests = testGroup "specific tests"
-    [ irTest @Amd64.Frame "locals and parameters frame offsets"
+    [ irTest @Amd64.LinuxFrame "locals and parameters frame offsets"
         [ "let"
         , itoaSrc
         , "  function test("
@@ -79,10 +72,10 @@ amd64SpecificTests = testGroup "specific tests"
                 _ -> pure ()
           where IRFunction{..} = fromJust $ find (findFuncByPrefix "test") irFunctions
                 args = frameArgs irFuncFrame
-                isInFrames = [ Just 32 -- Static link
-                             , Just 24 -- h
-                             , Just 16 -- g
+                isInFrames = [ Just 16 -- Static link
                              , Nothing, Nothing, Nothing, Nothing, Nothing, Nothing
+                             , Just 24 -- h
+                             , Just 32 -- g
                              ]
 
         findFuncByPrefix prefix IRFunction{..} = case frameName irFuncFrame of
@@ -92,43 +85,31 @@ amd64SpecificTests = testGroup "specific tests"
 irTest :: forall f. Frame f
        => TestName
        -> [Text]
-       -> [IRDataStmt f -> Assertion]
+       -> [IRData Stmt f -> Assertion]
        -> TestTree
 irTest name srcLines cases = testCase name $ do
     ir <- compileToIR (Text.unlines srcLines) (Proxy @f)
     mapM_ (\f -> f ir) cases
 
-runTestCases :: forall f e. FrameEmulator f e => TestName -> Proxy f -> Proxy e -> TestTree
+runTestCases :: forall f e. FrameEmulator f e Temp Stmt
+             => TestName
+             -> Proxy f
+             -> Proxy e
+             -> TestTree
 runTestCases name framePrx Proxy = testGroup name $ map runTestCase testCases
   where runTestCase :: TestCase -> TestTree
         runTestCase TestCase{..} = testCase testName $ do
             irData <- compileToIR testSrc framePrx
             forM_ testInputs $ \Input{..} -> do
-                emu <- newEmulator @e framePrx
-                res <- IR.runInterpreter emu irData inputStdin
-                case resError res of
-                    Just err -> assertFailure $  "unexpected IR interpreter error \n"
-                                              ++ "input: "
-                                              ++ Text.unpack inputStdin
-                                              ++ "\noutput: "
-                                              ++ LazyText.unpack (resOutput res)
-                                              ++ "\nError: "
-                                              ++ show err
-                    Nothing -> do
-                        let errText = "when interpret \n" ++ Text.unpack testSrc ++ "\n\n"
-                                    ++ "input: "
-                                    ++ Text.unpack inputStdin
-                        assertEqual errText
-                                    (inputStdout, inputExitCode)
-                                    (resOutput res, resCode res)
+                let rv = ReturnRegister Temp.RV
+                let fp = FrameRegister Temp.FP
+                res <- runInterpreter rv fp (Proxy @e) irData inputStdin
+                let errText =  "when interpret \n" ++ Text.unpack testSrc ++ "\n\n"
+                            ++ "input: "
+                            ++ Text.unpack inputStdin
+                assertEqual errText
+                            (inputStdout, inputExitCode)
+                            (resOutput res, resCode res)
 
-compileToIR :: forall f. Frame f => Text -> Proxy f -> IO (IRDataStmt f)
-compileToIR src Proxy = case parse "test.tig" src of
-    Left err -> assertFailure $ "unexpected parsing error `" ++ Text.unpack err
-    Right expr -> do
-        escResult <- escapeAnalyze expr
-        res <- runTempM (InitTemp 0) (InitLabel 0) $ semantAnalyze @f "test.tig" escResult
-        case res of
-            Left err -> assertFailure $  "unexpected type error `"
-                                      ++ Text.unpack (posedExceptionToText err)
-            Right ir -> pure ir
+compileToIR :: forall f. Frame f => Text -> Proxy f -> IO (IRData Stmt f)
+compileToIR src prxy = genericCompileToIR src prxy pure

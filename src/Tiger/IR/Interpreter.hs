@@ -9,7 +9,6 @@ import           Tiger.Frame               (Frame (..))
 import           Tiger.IR.Printer ()
 import           Tiger.IR.Types
 import           Tiger.RegMachine
-import           Tiger.RegMachine.Memory   hiding (readMemory, writeMemory)
 import           Tiger.Temp                (Label, Temp)
 
 import qualified Data.HashMap.Strict       as HashMap
@@ -105,15 +104,12 @@ runStmtM skipStmtLbl stmt = withCurrentStmt stmt $ case stmt of
                         getArgVals (v:vs) es l'
                     getArgVals vs _ l = pure (l, reverse vs)
                 (skipLbl', argVals) <- getArgVals [] args skipLbl
-                let regularCall = callFunction funLabel argVals
                 when (isNothing skipLbl') $
                     case funLabel of
                         Temp.LabelText funName
                           | Just libFunc <- HashMap.lookup funName libFuncs
                           -> libFunc argVals
-                          | otherwise
-                          -> regularCall
-                        _ -> regularCall
+                        _ -> callFunction funLabel argVals
 
                 res <- if isNothing skipLbl'
                        then getRegister Temp.RV

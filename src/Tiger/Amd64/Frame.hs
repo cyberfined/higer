@@ -10,7 +10,7 @@ module Tiger.Amd64.Frame
     , frameBuilder
     ) where
 
-import           Data.Foldable              (foldrM)
+import           Control.Monad              (foldM)
 import           Data.Text.Lazy.Builder     (Builder)
 import           Data.Text.Lazy.Builder.Int (decimal)
 
@@ -32,18 +32,18 @@ wordSize = 8
 
 newFrame :: MonadTemp m => Int -> Label -> [Escaping] -> m Frame
 newFrame maxRegisterArgs label args = do
-    (argsOffset, _, accessArgs) <- foldrM escToAccess acc args
+    (argsOffset, _, accessArgs) <- foldM escToAccess acc args
     pure $ Frame { frLabel      = label
                  , frCurOffset  = 0
                  , frArgsOffset = argsOffset
-                 , frArgs       = accessArgs
+                 , frArgs       = reverse accessArgs
                  }
   where acc = (wordSize, 0, [])
         escToAccess :: MonadTemp m
-                    => Escaping
-                    -> (Int, Int, [Access])
+                    => (Int, Int, [Access])
+                    -> Escaping
                     -> m (Int, Int, [Access])
-        escToAccess esc (curOffset, numRegArgs, as) = case esc of
+        escToAccess (curOffset, numRegArgs, as) = \case
             Escaping -> escResult
             Remaining
               | numRegArgs < maxRegisterArgs

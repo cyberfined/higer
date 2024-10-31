@@ -1,10 +1,9 @@
 module Tiger.Amd64.Frame.Linux (LinuxFrame) where
 
 import           Data.Bifunctor      (first)
-import           Data.Proxy          (Proxy (..))
 
 import           Tiger.Amd64.Assem   (CallingConvention (..), Instr, Reg (..))
-import           Tiger.Amd64.Codegen (genStmt)
+import           Tiger.Amd64.Codegen (codegen)
 import           Tiger.IR.Types      (Expr (..))
 import           Tiger.Temp          hiding (Temp)
 import           Tiger.TextUtils     (TextBuildable (..))
@@ -30,7 +29,7 @@ instance FrameClass.Frame LinuxFrame where
         Amd64.accessToIR (getFrame frame) access frameAddress
     externalCall _ name args = Call (LabelText name) args
     procEntryExit1 (LinuxFrame frame) = Amd64.procEntryExit1 frame
-    codegen _ = genStmt (Proxy @LinuxFrame)
+    codegen = codegen
 
 instance CallingConvention LinuxFrame where
     argsRegisters _ = [Rdi, Rsi, Rdx, Rcx, R8, R9]

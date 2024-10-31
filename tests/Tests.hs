@@ -1,5 +1,6 @@
 import           Test.Tasty
 
+import qualified CodegenTests
 import qualified EscapeAnalysisTests
 import qualified IRCanonTests
 import qualified IRGenTests
@@ -13,4 +14,5 @@ main = defaultMain $ testGroup "Tiger compiler tests"
     , TypeCheckerTests.tests
     , IRGenTests.tests
     , IRCanonTests.tests
+    , CodegenTests.tests
     ]

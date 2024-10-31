@@ -1,35 +1,41 @@
 module Tiger.Codegen
-    ( module Tiger.Codegen.Assem
-    , codegen
+    ( TempReg(..)
+    , WithOperands(..)
+    , Instruction(..)
+    , Sources(..)
+    , Destinations(..)
     ) where
 
-import           Control.Monad        (forM)
-import           Data.Foldable        (fold)
-import           Data.Graph.Inductive (Graph (..))
+import           Tiger.Temp      (Label, Temp)
+import           Tiger.TextUtils (TextBuildable (..))
 
-import           Tiger.Codegen.Assem
-import           Tiger.Frame          (Frame, Instr, Reg)
-import           Tiger.IR.Types       (Block (..), ControlFlowGraph (..), IRData (..),
-                                       IRFunction (..), Stmt)
-import           Tiger.Temp           (MonadTemp)
+data TempReg r = Reg r
+               | Temp !Temp
+               deriving stock (Eq, Functor)
 
-import qualified Tiger.DList          as DList
-import qualified Tiger.Frame          as Frame
+instance (Enum r, Bounded r) => Enum (TempReg r) where
+    fromEnum = \case
+        Reg r  -> fromEnum r
+        Temp x -> fromEnum (maxBound @r) + 1 + fromEnum x
 
-codegen :: ( MonadTemp m
-           , Frame f
-           , Instruction (Instr f) (TempReg (Reg f))
-           , Instruction (Instr f) (Reg f)
-           )
-        => IRData (ControlFlowGraph Stmt) f
-        -> m (IRData (ControlFlowGraph (Instr f (TempReg (Reg f)))) f)
-codegen ir@IRData{..} = do
-    funcs <- forM irFunctions $ \func@IRFunction{..} -> do
-        let nodes = labNodes (cfgGraph irFuncBody)
-        let edges = labEdges (cfgGraph irFuncBody)
-        nodes' <- forM nodes $ \(node, block@Block{..}) -> do
-            is <- DList.toList . fold <$> mapM (Frame.codegen irFuncFrame) blockStmts
-            pure (node, block { blockStmts = is })
-        let cfg = irFuncBody { cfgGraph = mkGraph nodes' edges }
-        pure $ func { irFuncBody = cfg }
-    pure $ ir { irFunctions = funcs }
+    toEnum x
+      | x >= fromEnum (minBound @r) && x <= fromEnum (maxBound @r) = Reg $ toEnum x
+      | otherwise = Temp $ toEnum $ x - fromEnum (maxBound @r) - 1
+
+instance TextBuildable r => TextBuildable (TempReg r) where
+    toTextBuilder = \case
+        Reg r  -> toTextBuilder r
+        Temp t -> toTextBuilder t
+
+newtype Sources r = Sources { getSource :: [r] }
+
+newtype Destinations r = Destinations { getDestination :: [r] }
+
+class (Eq r, Enum r) => WithOperands a r where
+    getOperands :: a r -> (Destinations r, Sources r)
+
+class (Eq r, Enum r, WithOperands a r) => Instruction a r where
+    isMove          :: a r -> Bool
+    matchLabel      :: a r -> Maybe Label
+    jumpsTo         :: a r -> [Label]
+    substOperands   :: [(r, b)] -> a r -> a b

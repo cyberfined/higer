@@ -23,9 +23,7 @@ source-repository head
 library
   exposed-modules:
       Tiger.Amd64
-    , Tiger.Amd64.Assem
     , Tiger.RegMachine
-    , Tiger.Codegen.Assem
     , Tiger.Codegen
     , Tiger.DList
     , Tiger.EscapeAnalysis
@@ -39,6 +37,7 @@ library
     , Tiger.Unique
   other-modules:
       Tiger.Amd64.AsmPrinters.Gas
+    , Tiger.Amd64.Assem
     , Tiger.Amd64.Assem.Interpreter
     , Tiger.Amd64.Assem.Types
     , Tiger.Amd64.Codegen
@@ -117,6 +116,7 @@ test-suite tests
   main-is: Tests.hs
   other-modules:
       BackendTestCases
+    , CodegenTests
     , Common
     , EscapeAnalysisTests
     , ParserTests
@@ -135,7 +135,10 @@ test-suite tests
     , tasty-hunit >= 0.10 && < 1    
   default-extensions:
       LambdaCase
+    , FlexibleContexts
     , OverloadedStrings
+    , ScopedTypeVariables
     , RecordWildCards
     , TypeApplications    
+    , TupleSections
   default-language: Haskell2010

@@ -13,8 +13,7 @@ import           Tiger.Amd64.Frame       (Frame (..))
 import           Tiger.Codegen           (TempReg (..))
 import           Tiger.Frame             (Access (..), wordSize)
 import           Tiger.IR.Types          (Stmt)
-import           Tiger.RegMachine        (MonadInterpret (..))
-import           Tiger.RegMachine.Memory (Address (..), Size (..))
+import           Tiger.RegMachine        (Address (..), MonadInterpret (..), Size (..))
 import           Tiger.Temp              (Temp (..))
 
 import qualified Tiger.RegMachine        as RegMachine
@@ -27,7 +26,7 @@ instance CallingConvention f => RegMachine.Emulator IREmulator f Temp Stmt where
 
     newEmulator = const $ pure IREmulator
     enterFunction IREmulator frame args = do
-        let (allocSize, Size varsOffset) = getAllocSize frame
+        let (allocSize, Size varsOffset) = getIRAllocSize frame
         sp <- allocateStack allocSize
         let nextFP = getAddress sp + varsOffset
         curFP <- getRegister FP
@@ -41,8 +40,14 @@ instance CallingConvention f => RegMachine.Emulator IREmulator f Temp Stmt where
         curFP <- fromIntegral <$> getRegister FP
         oldFP <- readMemory (Address curFP)
         setRegister FP oldFP
-        let deallocSize = fst $ getAllocSize frame
+        let deallocSize = fst $ getIRAllocSize frame
         reduceStack deallocSize
+
+getIRAllocSize :: forall f. CallingConvention f => f -> (Size, Size)
+getIRAllocSize frame = ( Size $ frArgsOffset + frCurOffset + wordSize (Proxy @f)
+                       , Size frCurOffset
+                       )
+  where Frame{..} = toAmd64Frame frame
 
 data TempRegEmulator = TempRegEmulator
 
@@ -53,22 +58,24 @@ instance CallingConvention f =>
 
     newEmulator = const $ pure TempRegEmulator
 
-    enterFunction TempRegEmulator _ _ = do
+    enterFunction TempRegEmulator frame _ = do
+        let (allocSize, rbpOffset) = getTempRegAllocSize frame
         fp <- getRegister (Reg Rbp)
-        sp <- allocateStack (Size (wordSize (Proxy @f)))
-        writeMemory sp fp
-        setRegister (Reg Rbp) (fromIntegral $ getAddress sp)
+        sp <- allocateStack allocSize
+        let rbpAddr = Address $ getAddress sp + rbpOffset
+        writeMemory rbpAddr fp
+        setRegister (Reg Rbp) (fromIntegral $ getAddress rbpAddr)
         setRegister (Reg Rsp) (fromIntegral $ getAddress sp)
 
-    exitFunction TempRegEmulator _ = do
+    exitFunction TempRegEmulator frame = do
+        let (Size allocSize, _) = getTempRegAllocSize frame
+        sp <- getRegister (Reg Rsp)
         fp <- getRegister (Reg Rbp)
         oldFp <- readMemory (Address $ fromIntegral fp)
         setRegister (Reg Rbp) oldFp
-        reduceStack (Size $ wordSize (Proxy @f))
-        setRegister (Reg Rsp) (fp + fromIntegral (wordSize $ Proxy @f))
+        reduceStack (Size allocSize)
+        setRegister (Reg Rsp) (sp + fromIntegral allocSize)
 
-getAllocSize :: forall f. CallingConvention f => f -> (Size, Size)
-getAllocSize frame = ( Size $ frArgsOffset + frCurOffset + wordSize (Proxy @f)
-                     , Size frCurOffset
-                     )
+getTempRegAllocSize :: forall f. CallingConvention f => f -> (Size, Int)
+getTempRegAllocSize frame = (Size $ frCurOffset + 2 * wordSize (Proxy @f), frCurOffset)
   where Frame{..} = toAmd64Frame frame

@@ -7,7 +7,6 @@ import           Test.Tasty.HUnit
 
 import           Common
 import           Tiger.EscapeAnalysis (escapeAnalyze, getEscapeAnalysisResult)
-import           Tiger.Parser         (parse)
 
 import qualified Data.Text            as Text
 
@@ -409,14 +408,9 @@ tests = testGroup "Escape analysis tests"
 
 test :: TestName -> [Text] -> EqExpr -> TestTree
 test name srcLines exp = testCase name $ do
-    case parse "test.tig" src of
-        Left err  -> assertFailure $  "unexpected parsing error `"
-                                   ++ Text.unpack src
-                                   ++ "`:\n"
-                                   ++ Text.unpack err
-        Right act -> do
-            escAct <- escapeAnalyze act
-            assertEqual ("when analyze `" ++ Text.unpack src ++ "`")
-                        exp
-                        (EqExpr (getEscapeAnalysisResult escAct))
+    act <- genericParser "test.tig" src
+    escAct <- escapeAnalyze act
+    assertEqual ("when analyze `" ++ Text.unpack src ++ "`")
+                exp
+                (EqExpr (getEscapeAnalysisResult escAct))
   where src = Text.unlines srcLines

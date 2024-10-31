@@ -9,6 +9,9 @@ module Tiger.Amd64.Assem.Types
     , Index(..)
     , Scale(..)
     , OperandType(..)
+    , Const32
+    , Const64
+    , RegMem
     , Operand(..)
     , Instr(..)
     , Imul(..)
@@ -27,7 +30,7 @@ import           GHC.Natural
 import           GHC.TypeLits               (ErrorMessage (..), TypeError)
 
 import           Tiger.Amd64.Frame          (Frame)
-import           Tiger.Codegen.Assem        (Destinations (..), Instruction (..),
+import           Tiger.Codegen              (Destinations (..), Instruction (..),
                                              Sources (..), TempReg (..),
                                              WithOperands (..))
 import           Tiger.Temp                 (Label)
@@ -143,8 +146,8 @@ data Instr r where
         -> !(Operand r t2)
         -> Instr r
     Lea :: !(Operand r 'OpReg) -> !(Operand r 'OpMem) -> Instr r
-    Sal :: !(Operand r t1) -> !(Operand r ('OpConst 8)) -> Instr r
-    Sar :: !(Operand r t1) -> !(Operand r ('OpConst 8)) -> Instr r
+    Sal :: RegMem t1 => !(Operand r t1) -> !(Operand r ('OpConst 8)) -> Instr r
+    Sar :: RegMem t1 => !(Operand r t1) -> !(Operand r ('OpConst 8)) -> Instr r
     Imul :: !(Imul r) -> Instr r
     Idiv :: !(Operand r 'OpReg) -> Instr r
     Cqo :: Instr r
@@ -166,6 +169,7 @@ data Instr r where
     Label :: !Label -> Instr r
     Call :: !Label -> ![Operand r 'OpReg] -> Instr r
     Push :: Const32 t => !(Operand r t) -> Instr r
+    Neg :: RegMem t => !(Operand r t) -> Instr r
 
 data Imul (r :: Type) where
     Imul2 :: RegMem t
@@ -211,6 +215,7 @@ instance TextBuildable r => TextBuildable (Instr r) where
         Label l -> toTextBuilder l <> ":"
         Call funName _ -> "call " <> toTextBuilder funName
         Push src -> "pushq " <> opToAsm src
+        Neg dst -> "negq " <> opToAsm dst
       where opToAsm :: Operand r t -> Builder
             opToAsm = \case
                 AddrRegBase (Offset off) (Base b) ->
@@ -279,6 +284,9 @@ getOperandsG f = makeUniq . \case
         let srcs = map (\(Register r) -> r) args
         in (Destinations [f Rax, f Rdx], Sources (f Rsp : srcs))
     Push src -> (Destinations [f Rsp], getSrcOperandRegs (Sources []) src)
+    Neg dst -> case dst of
+        Register r -> (Destinations [r], Sources [r])
+        _          -> getDstOperandRegs dst
   where getDstOperandRegs :: Operand r t -> (Destinations r, Sources r)
         getDstOperandRegs = \case
             AddrRegBase _ (Base b)                         -> ( Destinations []
@@ -344,6 +352,7 @@ instance (Eq r, Enum r, WithOperands Instr r) => Instruction Instr r where
         Label l -> Label l
         Call fn args -> Call fn $ map substOperand args
         Push t -> Push $ substOperand t
+        Neg t -> Neg $ substOperand t
       where substOperand :: Operand r t -> Operand b t
             substOperand = \case
                 AddrRegBase off (Base b) -> AddrRegBase off (Base $ findSubst ss b)

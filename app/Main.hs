@@ -4,12 +4,11 @@ import           Control.Monad.IO.Class     (MonadIO (..))
 import           Data.Bifunctor             (first)
 import           Data.Proxy                 (Proxy (..))
 import           Data.Text                  (Text)
-import           System.Exit                (exitFailure)
 
 import           Tiger.Amd64                (Gas (..))
-import           Tiger.Codegen              (codegen)
+import           Tiger.Codegen              (TempReg (..))
 import           Tiger.EscapeAnalysis       (escapeAnalyze, getEscapeAnalysisResult)
-import           Tiger.IR                   (IRData, Stmt, canonicalize)
+import           Tiger.IR                   (IRData, canonicalize)
 import           Tiger.Parser               (parse)
 import           Tiger.RegMachine           (Emulator (..), FrameEmulator,
                                              FrameRegister (..), Interpretable,
@@ -25,20 +24,25 @@ import qualified Data.Text.Lazy.Builder.Int as Builder
 import qualified Data.Text.Lazy.IO          as LTIO
 
 import qualified Tiger.Amd64                as Amd64
+import qualified Tiger.Frame                as Frame
 import qualified Tiger.RegMachine           as RegMachine
+
+import           System.Exit                (exitFailure)
 
 rightOrDie :: MonadIO m => (a -> m ()) -> Either a b -> m b
 rightOrDie handler = \case
     Left err  -> handler err >> liftIO exitFailure
     Right res -> pure res
 
-runInterpreter :: (FrameEmulator f e Temp Stmt, Interpretable f e Temp Stmt b)
-               => e
+runInterpreter :: (FrameEmulator f e r s, Interpretable f e r s b)
+               => ReturnRegister r
+               -> FrameRegister r
+               -> e
                -> IRData b f
                -> Text
                -> IO ()
-runInterpreter emu ir input = do
-    InterpreterResult{..} <- RegMachine.runInterpreter (ReturnRegister RV) (FrameRegister FP) emu ir input
+runInterpreter rv fp emu ir input = do
+    InterpreterResult{..} <- RegMachine.runInterpreter rv fp emu ir input
     case resError of
         Just err -> do
             let resText =  Builder.toLazyText
@@ -66,17 +70,16 @@ main = do
         irStmt <- semantAnalyze @Amd64.LinuxFrame "test.tig" escExpr >>=
             rightOrDie (liftIO . TIO.putStrLn . posedExceptionToText)
         irCfgStmt <- canonicalize irStmt
-        irCfgInstr <- codegen irCfgStmt
+        irCfgInstr <- Frame.codegen irCfgStmt
         pure (irStmt, irCfgStmt, irCfgInstr)
 
     TIO.putStrLn "Type check was successful"
     LTIO.putStr $ Builder.toLazyText $ toTextBuilder irStmt
-    runInterpreter emu irStmt "6"
+    runInterpreter (ReturnRegister RV) (FrameRegister FP) emu irStmt input
     LTIO.putStr $ Builder.toLazyText $ toTextBuilder irCfgStmt
-    runInterpreter emu irCfgStmt "6"
+    runInterpreter (ReturnRegister RV) (FrameRegister FP) emu irCfgStmt input
     LTIO.putStr $ Builder.toLazyText $ toTextBuilder $ first (fmap Gas) irCfgInstr
 
-    {-
     tregEmu  <- newEmulator @Amd64.TempRegEmulator (Proxy @Amd64.LinuxFrame)
-    amd64Res <- Amd64.runInterpreter tregEmu (ReturnRegister $ Reg Amd64.Rax) (FrameRegister $ Reg Amd64.Rbp) irCfgInstr "6"
-    -}
+    runInterpreter (ReturnRegister $ Reg Amd64.Rax) (FrameRegister $ Reg Amd64.Rbp) tregEmu irCfgInstr input
+  where input = "5\n10\n9\n8\n7\n6\n5"

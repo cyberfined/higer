@@ -14,6 +14,8 @@ module Tiger.RegMachine
     , MonadInterpret(..)
     , Trans(..)
     , Interpretable(..)
+    , Address(..)
+    , Size(..)
     , initFunctionsCFG
     , InterpreterResult(..)
     , runInterpreter
@@ -196,10 +198,12 @@ class Emulator e f r s | e -> r, e -> s where
 
 type FrameEmulator f e r s = ( Frame f
                              , Emulator e f r s
+                             , Bounded (Word e)
                              , Unbox (Word e)
                              , FiniteBits (Word e)
                              , Integral (Word e)
                              , Num (Word e)
+                             , Bounded (UWord e)
                              , Integral (UWord e)
                              )
 
@@ -334,7 +338,7 @@ instance ( Frame f
         liftIO $ handle hdl $ readGrowVector regs (fromEnum reg)
     getString (Address addr) = do
         stringsMap <- asks ctxStrings
-        InterpretM (HashTable.lookup stringsMap addr) >>= \case
+        liftIO (HashTable.lookup stringsMap addr) >>= \case
             Nothing  -> throwInterpretException UndefinedStringAccess
             Just str -> pure str
     allocateStack size = do
@@ -373,7 +377,7 @@ instance ( Frame f
     newString str = do
         addr@(Address key) <- allocateMemory (Size (wordSize (Proxy @f)))
         stringsMap <- asks ctxStrings
-        InterpretM $ HashTable.insert stringsMap key str
+        liftIO $ HashTable.insert stringsMap key str
         pure addr
     callFunction funLabel args = do
         funcsMap <- asks ctxFunctions

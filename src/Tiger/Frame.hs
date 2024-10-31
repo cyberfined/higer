@@ -8,10 +8,9 @@ import           Data.Proxy                 (Proxy)
 import           Data.Text                  (Text)
 import           Data.Text.Lazy.Builder.Int (decimal)
 
-import           Tiger.Codegen.Assem        (Instruction, TempReg)
-import           Tiger.DList                (DList)
+import           Tiger.Codegen              (Instruction, TempReg)
 import           Tiger.Expr                 (Escaping)
-import           Tiger.IR.Types             (Expr, Stmt)
+import           Tiger.IR.Types             (ControlFlowGraph, Expr, IRData, Stmt)
 import           Tiger.Temp                 (Label, MonadTemp (..), Temp)
 import           Tiger.TextUtils            (TextBuildable (..))
 
@@ -40,6 +39,5 @@ class TextBuildable a => Frame a where
                , Instruction (Instr a) (TempReg (Reg a))
                , Instruction (Instr a) (Reg a)
                )
-            => a
-            -> Stmt
-            -> m (DList (Instr a (TempReg (Reg a))))
+            => IRData (ControlFlowGraph Stmt) a
+            -> m (IRData (ControlFlowGraph (Instr a (TempReg (Reg a)))) a)

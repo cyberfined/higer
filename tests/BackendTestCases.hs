@@ -685,7 +685,7 @@ testCases =
         , atoiSrc
         , itoaSrc
         , "  type film = { title: string, minAge: int }"
-        , "  function filmToString(f: film): string = "
+        , "  function filmToString(f: film): string ="
         , "    concat("
         , "      concat(\"film { title = \", f.title),"
         , "      concat(concat(\", minAge = \", itoa(f.minAge)), \" }\")"
@@ -702,7 +702,7 @@ testCases =
         , atoiSrc
         , itoaSrc
         , "  type film = { title: string, minAge: int }"
-        , "  function filmToString(f: film): string = "
+        , "  function filmToString(f: film): string ="
         , "    concat("
         , "      concat(\"film { title = \", f.title),"
         , "      concat(concat(\", minAge = \", itoa(f.minAge)), \" }\")"
@@ -881,7 +881,7 @@ testCases =
         , "  var currentAge := atoi(readLine())"
         , "  function findFilmByTitle("
         , "    title: string, films: filmArray, numFilms: int"
-        , "  ): film = "
+        , "  ): film ="
         , "    let"
         , "      var result: film := nil"
         , "    in"
@@ -942,7 +942,7 @@ testCases =
         , "  var films := filmArray [ 5 ] of nil"
         , "  var findTitle := readLine()"
         , "  var currentAge := atoi(readLine())"
-        , "  function findFilmByTitle(title: string): film = "
+        , "  function findFilmByTitle(title: string): film ="
         , "    let"
         , "      var result: film := nil"
         , "    in"
@@ -1424,7 +1424,7 @@ testCases =
 
 readLineSrc :: Text
 readLineSrc = Text.unlines
-    [ "function readLine(): string = "
+    [ "function readLine(): string ="
     , "  let"
     , "    var result := \"\""
     , "  in"
@@ -1484,7 +1484,7 @@ unwordsSrc :: Text
 unwordsSrc = Text.unlines
     [ "type strarray = array of string"
     , "type words = { words: strarray, numWords: int }"
-    , "function unwords(s: string): words = "
+    , "function unwords(s: string): words ="
     , "  let"
     , "    var numWords := 0"
     , "    var isWord := 0"
