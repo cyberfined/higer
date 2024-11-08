@@ -1,6 +1,6 @@
 import           Test.Tasty
 
-import qualified CodegenTests
+import qualified Codegen.Tests       as CodegenTests
 import qualified EscapeAnalysisTests
 import qualified IRCanonTests
 import qualified IRGenTests

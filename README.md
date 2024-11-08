@@ -10,4 +10,7 @@ Tiger compiler written in haskell
 - [x] Escape analysis
 - [x] IR generation
 - [ ] IR optimizations
+- [x] AMD64 Instruction selection
+- [ ] Liveness analysis
 - [ ] Assembly language code generation
+- [ ] Language runtime

@@ -82,4 +82,5 @@ main = do
 
     tregEmu  <- newEmulator @Amd64.TempRegEmulator (Proxy @Amd64.LinuxFrame)
     runInterpreter (ReturnRegister $ Reg Amd64.Rax) (FrameRegister $ Reg Amd64.Rbp) tregEmu irCfgInstr input
-  where input = "5\n10\n9\n8\n7\n6\n5"
+  where input = "6\n2 3\n4 5\n6 1\n11 45\n89 100\n345 787"
+

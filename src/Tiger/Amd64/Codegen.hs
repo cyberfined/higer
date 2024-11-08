@@ -1,9 +1,13 @@
 {-# OPTIONS_GHC -fmax-pmcheck-models=500 #-}
 {-# LANGUAGE DataKinds #-}
 
-module Tiger.Amd64.Codegen (codegen) where
+module Tiger.Amd64.Codegen
+    ( codegen
+    , genStmt
+    ) where
 
 import           Control.Monad           (foldM, forM)
+import           Data.Bifunctor          (first)
 import           Data.Bits               (Bits (..), countLeadingZeros, finiteBitSize)
 import           Data.Foldable           (fold)
 import           Data.HashMap.Strict     (HashMap)
@@ -43,7 +47,7 @@ codegen ir@IRData{..} = do
         (firstNode, shouldInsertNode) <- case mFirstNode of
             Nothing -> error "Zero node not found"
             Just (node, block@Block{..}) -> do
-                stmts' <- fold <$> mapM (genStmt prxy funcsMap) blockStmts
+                stmts' <- fold <$> mapM (genStmt funcsMap) blockStmts
                 case blockStmts of
                     (IR.Label{}:_) ->
                         let block' = block { blockStmts = toList stmts' }
@@ -53,7 +57,7 @@ codegen ir@IRData{..} = do
                         in pure ((node, block'), False)
 
         nodes' <- forM nodes $ \(node, block@Block{..}) -> do
-            stmts' <- fold <$> mapM (genStmt prxy funcsMap) blockStmts
+            stmts' <- fold <$> mapM (genStmt funcsMap) blockStmts
             pure (node, block { blockStmts = toList stmts' })
 
         let cfg = Graph.mkGraph (firstNode:nodes') (Graph.labEdges $ cfgGraph irFuncBody)
@@ -74,11 +78,10 @@ codegen ir@IRData{..} = do
                            _        -> (Nothing, xs)
 
 genStmt :: forall f m. (HasCallStack, CallingConvention f, MonadTemp m)
-        => Proxy f
-        -> HashMap Temp.Label f
+        => HashMap Temp.Label f
         -> Stmt
         -> m (DList (Instr (TempReg Reg)))
-genStmt prxy funcsMap = \case
+genStmt funcsMap = \case
     IR.Label l -> pure $ singleton (Label l)
     IR.Move (IR.Temp dst) (IR.Call funName args) -> do
         is <- genCall funName args
@@ -102,14 +105,12 @@ genStmt prxy funcsMap = \case
 
     IR.CJump op (Mem addr) expr tLab fLab -> cmpMem (relop2Cond op) addr expr tLab fLab
     IR.CJump op expr (Mem addr) tLab fLab -> cmpMem (relop2Cond op) addr expr tLab fLab
-    IR.CJump IR.Eq e1 (IR.Const 0) tLab fLab -> cmpZero Eq e1 tLab fLab
-    IR.CJump IR.Eq (IR.Const 0) e2 tLab fLab -> cmpZero Eq e2 tLab fLab
-    IR.CJump IR.Ne e1 (IR.Const 0) tLab fLab -> cmpZero Ne e1 tLab fLab
-    IR.CJump IR.Ne (IR.Const 0) e2 tLab fLab -> cmpZero Ne e2 tLab fLab
+    IR.CJump op e1 (IR.Const 0) tLab fLab -> cmpZero (relop2Cond op) e1 tLab fLab
+    IR.CJump op (IR.Const 0) e2 tLab fLab -> cmpZero (relop2Cond op) e2 tLab fLab
     IR.CJump op (IR.Const c) e2 tLab fLab
-      | Just c32 <- toIntN c -> cmpConst (notRelop op) c32 e2 tLab fLab
+      | Just c32 <- toIntN c -> cmpConst (relop2Cond $ notRelop op) c32 e2 tLab fLab
     IR.CJump op e1 (IR.Const c) tLab fLab
-      | Just c32 <- toIntN c -> cmpConst op c32 e1 tLab fLab
+      | Just c32 <- toIntN c -> cmpConst (relop2Cond op) c32 e1 tLab fLab
     IR.CJump op e1 e2 tLab fLab -> do
         (op1, is1) <- tempOrGen e1
         (op2, is2) <- tempOrGen e2
@@ -186,22 +187,21 @@ genStmt prxy funcsMap = \case
         cmpConst op c expr tLab fLab = do
             (op1, is) <- tempOrGen expr
             let cmp = Cmp (Register op1) (Const c)
-            let jcc = Jcc (relop2Cond op) tLab fLab
+            let jcc = Jcc op tLab fLab
             pure $ is <> fromList [cmp, jcc]
 
-        -- TODO: cmp const with mem
         cmpMem cnd addrExpr expr tLab fLab = do
             (addr, is1) <- case addrExpr of
-                IR.Temp t -> pure (AddrRegBase (Offset 0) (Base $ tempToReg t), empty)
                 Binop op e1 e2
                   | Just gen <- matchAddr op e1 e2 -> gen Nothing
                 _ -> do
-                    base <- Temp <$> newTemp
-                    is <- genExpr addrExpr base
+                    (base, is) <- tempOrGen addrExpr
                     let op = AddrRegBase (Offset 0) (Base base)
                     pure (op, is)
-            (src, is2) <- tempOrGen expr
-            let cmp = Cmp addr (Register src)
+            (cmp, is2) <- case expr of
+                IR.Const c
+                  | Just c32 <- toIntN c -> pure (Cmp addr $ Const c32, empty)
+                _ -> first (Cmp addr . Register) <$> tempOrGen expr
             let jcc = Jcc cnd tLab fLab
             pure $ is1 <> is2 <> fromList [cmp, jcc]
 
@@ -213,6 +213,8 @@ genStmt prxy funcsMap = \case
             IR.Le -> Le
             IR.Gt -> Gt
             IR.Ge -> Ge
+
+        prxy = Proxy @f
 
 
 genExpr :: forall m. (HasCallStack, MonadTemp m)
@@ -248,8 +250,10 @@ genExpr = \case
                pure $ is2 |> Sub (Register dst) (Register op1)
         pure $ is1 <> is2
 
-    Binop IR.Mul (IR.Const s) expr -> constMul s expr
-    Binop IR.Mul expr (IR.Const s) -> constMul s expr
+    Binop IR.Mul (IR.Const s) expr
+      | Just s32 <- toIntN s -> constMul s32 expr
+    Binop IR.Mul expr (IR.Const s)
+      | Just s32 <- toIntN s -> constMul s32 expr
     Binop IR.Mul e1 e2 -> \dst -> do
         (op1, is1) <- tempOrGen e2
         (op2, is2) <- if op1 == dst
@@ -273,33 +277,22 @@ genExpr = \case
         let mov = Mov (Register dst) (Register $ Reg Rax)
         pure $ is1 <> is2 <> fromList [Cqo, idiv, mov]
 
-    IR.Mem (IR.Temp t) -> \dst ->
-        let addr = AddrRegBase (Offset 0) (Base $ tempToReg t)
-            mov = Mov (Register dst) addr
-        in pure $ singleton mov
     IR.Mem (IR.Binop op e1 e2)
       | Just gen <- matchAddr op e1 e2 -> \dst -> do
           (addr, is) <- gen (Just dst)
           let mov = Mov (Register dst) addr
           pure $ is |> mov
     IR.Mem e -> \dst -> do
-        is <- genExpr e dst
-        let addr = AddrRegBase (Offset 0) (Base dst)
+        (op, is) <- tempOrDst dst e
+        let addr = AddrRegBase (Offset 0) (Base op)
         let mov = Mov (Register dst) addr
         pure $ is |> mov
     IR.ESeq{} -> error "ESeq detected, expression should be canonicalized"
     _ -> error "Unimplemented"
-  where constMul s expr dst = case toIntN s of
-            Just s32 -> do
-                (op, is) <- tempOrDst dst expr
-                let imul = Imul $ Imul3 (Register dst) (Register op) (Const s32)
-                pure $ is |> imul
-            Nothing -> do
-                is <- genExpr expr dst
-                op <- Temp <$> newTemp
-                let mov = Mov (Register op) (Const $ fromIntegral s)
-                let imul = Imul $ Imul2 (Register dst) (Register op)
-                pure $ is <> fromList [mov, imul]
+  where constMul s expr dst = do
+            (op, is) <- tempOrDst dst expr
+            let imul = Imul $ Imul3 (Register dst) (Register op) (Const s)
+            pure $ is |> imul
 
         mkShift :: Int -> Maybe Int8
         mkShift x
@@ -457,7 +450,7 @@ tempOrGen = \case
 toIntN :: forall a b. (Bits a, Integral a, Bits b, Bounded b, Integral b) => a -> Maybe b
 toIntN x = case (bitSizeMaybe (0 :: a), bitSizeMaybe (0 :: b)) of
     (Just aSize, Just bSize)
-      | aSize >= bSize -> if aSize > fromIntegral (maxBound @b)
+      | aSize >= bSize -> if x > fromIntegral (maxBound @b)
                              then Nothing
                              else Just $ fromIntegral x
       | otherwise      -> Just $ fromIntegral x

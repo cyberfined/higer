@@ -6,6 +6,7 @@ module BackendTestCases
     , atoiSrc
     , itoaSrc
     , unwordsSrc
+    , test
     ) where
 
 import           Data.Text      (Text)

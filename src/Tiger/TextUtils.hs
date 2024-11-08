@@ -22,24 +22,25 @@ showNode :: Builder -> [Builder -> Builder -> Builder] -> Builder -> Builder -> 
 showNode node = showNodeNames node . map (Nothing,)
 
 showLeaf :: Builder -> Builder -> Builder -> Builder
-showLeaf s pr _ = pr <> s <> "\n"
+showLeaf s pr _ = pr <> s
 
 showNodeNames :: Builder
               -> [(Maybe Builder, Builder -> Builder -> Builder)]
               -> Builder -> Builder -> Builder
-showNodeNames node xs pr cpr = pr <> node <> "\n" <> showXs pr cpr
-  where showXs :: Builder -> Builder -> Builder
+showNodeNames node xs pr cpr = pr <> node <> xsBuilder
+  where xsBuilder :: Builder
+        xsBuilder = (if null xs then "" else "\n") <> showXs pr cpr
+
+        showXs :: Builder -> Builder -> Builder
         showXs = snd (foldr (\a b -> (False, go a b)) (True, \_ _ -> "") xs)
 
         go :: (Maybe Builder, Builder -> Builder -> Builder)
            -> (Bool, Builder -> Builder -> Builder)
            -> Builder -> Builder -> Builder
         go (mName, pfunc) (isLast, fs) goPr goCpr
-          | Just name <- mName
-          = showName name <> rest
-          | otherwise
-          = pfunc newPr newCpr <> rest
-          where rest = fs goPr goCpr
+          | Just name <- mName = showName name <> rest
+          | otherwise          = pfunc newPr newCpr <> rest
+          where rest = (if isLast then "" else "\n") <> fs goPr goCpr
                 (newPr, newCpr) = if isLast
                                      then (goCpr <> "└── ", goCpr <> "    ")
                                      else (goCpr <> "├── ", goCpr <> "│   ")

@@ -19,7 +19,7 @@ instance (TextBuildable b, Frame f) => TextBuildable (IRData b f) where
                 in if null irStrings then "" else "(strings)\n" <> res <> "\n"
 
             funcs =  "(functions)\n"
-                  <> intercalate "\n" (map toTextBuilder irFunctions)
+                  <> intercalate "\n\n" (map toTextBuilder irFunctions)
 
 instance (TextBuildable b, Frame f) => TextBuildable (IRFunction b f) where
     toTextBuilder IRFunction{..} = signature <> toTextBuilder irFuncBody
@@ -31,9 +31,9 @@ instance (TextBuildable b, Frame f) => TextBuildable (IRFunction b f) where
 
 instance TextBuildable s => TextBuildable (ControlFlowGraph s) where
     toTextBuilder = cfgBuilder . cfgGraph
-      where cfgBuilder = intercalate "\n" . Graph.dfsWith' nodeBuilder
+      where cfgBuilder = intercalate "\n\n" . Graph.dfsWith' nodeBuilder
             nodeBuilder (_, _, Block{..}, _) =
-                intercalate "\n" (map toTextBuilder blockStmts) <> "\n"
+                intercalate "\n" (map toTextBuilder blockStmts)
 
 instance TextBuildable Stmt where
     toTextBuilder s = stmtBuilder' s "" ""
