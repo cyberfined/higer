@@ -32,8 +32,9 @@ canonicalize IRData{..} = do
         let blocks = basicBlocks funName stmts
         traces <- reduceBasicBlocks (getTraces blocks)
         let cfg = createControlFlowGraph traces
-        pure $ IRFunction { irFuncBody  = cfg
-                          , irFuncFrame = irFuncFrame
+        pure $ IRFunction { irFuncBody    = cfg
+                          , irFuncFrame   = irFuncFrame
+                          , irFuncRetType = irFuncRetType
                           }
     pure $ IRData { irStrings   = irStrings
                   , irFunctions = cfgFunctions

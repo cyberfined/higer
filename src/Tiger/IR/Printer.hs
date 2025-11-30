@@ -26,7 +26,7 @@ instance (TextBuildable b, Frame f) => TextBuildable (IRFunction b f) where
       where signature =
                 let args = intercalate ", " (map toTextBuilder $ frameArgs irFuncFrame)
                 in toTextBuilder (frameName irFuncFrame)
-                <> "(" <> args <> "):\n"
+                <> "(" <> args <> "): " <> toTextBuilder irFuncRetType <> "\n"
                 <> toTextBuilder irFuncFrame <> "\n"
 
 instance TextBuildable s => TextBuildable (ControlFlowGraph s) where

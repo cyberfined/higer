@@ -16,6 +16,8 @@ module Tiger.IR.Types
     , notRelop
     ) where
 
+import           Tiger.Semant.Type    (Type (..))
+
 import           Data.Bifunctor       (Bifunctor (..))
 import           Data.Graph.Inductive (Gr, Node)
 import           Data.HashMap.Strict  (HashMap)
@@ -41,13 +43,15 @@ data LabeledString = LabeledString
     }
 
 data IRFunction b f = IRFunction
-    { irFuncBody  :: !b
-    , irFuncFrame :: !f
+    { irFuncBody    :: !b
+    , irFuncFrame   :: !f
+    , irFuncRetType :: !Type
     } deriving Functor
 
 instance Bifunctor IRFunction where
-    bimap f g IRFunction{..} = IRFunction { irFuncBody  = f irFuncBody
-                                          , irFuncFrame = g irFuncFrame
+    bimap f g IRFunction{..} = IRFunction { irFuncBody    = f irFuncBody
+                                          , irFuncFrame   = g irFuncFrame
+                                          , irFuncRetType = irFuncRetType
                                           }
 
 data ControlFlowGraph s = ControlFlowGraph

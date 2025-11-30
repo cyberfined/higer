@@ -41,3 +41,4 @@ class TextBuildable a => Frame a where
                )
             => IRData (ControlFlowGraph Stmt) a
             -> m (IRData (ControlFlowGraph (Instr a (TempReg (Reg a)))) a)
+    gpRegisters :: Proxy a -> [Reg a]

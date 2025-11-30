@@ -1,10 +1,15 @@
+{-# LANGUAGE FunctionalDependencies #-}
+
 module Tiger.Codegen
     ( TempReg(..)
     , WithOperands(..)
     , Instruction(..)
+    , InstructionBuilder(..)
     , Sources(..)
     , Destinations(..)
     ) where
+
+import           Data.Proxy      (Proxy)
 
 import           Tiger.Temp      (Label, Temp)
 import           Tiger.TextUtils (TextBuildable (..))
@@ -39,3 +44,8 @@ class (Eq r, Enum r, WithOperands a r) => Instruction a r where
     matchLabel      :: a r -> Maybe Label
     jumpsTo         :: a r -> [Label]
     substOperands   :: [(r, b)] -> a r -> a b
+
+class Instruction a r => InstructionBuilder b a r | b -> a, a -> b, r -> b where
+    loadRegister  :: Proxy b -> Int -> r -> a r
+    storeRegister :: Proxy b -> Int -> r -> a r
+    moveRegister  :: Proxy b -> r -> r -> a r

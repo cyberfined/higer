@@ -2,47 +2,48 @@ module Tiger.Semant
     ( Type(..)
     , SemantException(..)
     , PosedSemantException(..)
-    , posedExceptionToText
-    , exceptionToText
     , semantAnalyze
     ) where
 
-import           Control.Exception         (Exception)
-import           Control.Monad             (foldM, forM, forM_, mapAndUnzipM, unless,
-                                            when)
-import           Control.Monad.Except      (ExceptT (..), MonadError (..), runExceptT,
-                                            throwError)
-import           Control.Monad.IO.Class    (MonadIO (..))
-import           Control.Monad.Reader      (MonadReader, ReaderT, asks, runReaderT)
-import           Control.Monad.Trans.Class (lift)
-import           Data.HashMap.Strict       (HashMap)
-import           Data.IORef                (IORef, modifyIORef', newIORef, readIORef,
-                                            writeIORef)
-import           Data.List                 (delete)
-import           Data.Maybe                (catMaybes)
-import           Data.Text                 (Text)
-import           Data.Vector.Hashtables    (Dictionary, PrimMonad (PrimState))
-import           Prelude                   hiding (exp, span)
+import           Control.Exception          (Exception)
+import           Control.Monad              (foldM, forM, forM_, mapAndUnzipM, unless,
+                                             when)
+import           Control.Monad.Except       (ExceptT (..), MonadError (..), runExceptT,
+                                             throwError)
+import           Control.Monad.IO.Class     (MonadIO (..))
+import           Control.Monad.Reader       (MonadReader, ReaderT, asks, runReaderT)
+import           Control.Monad.Trans.Class  (lift)
+import           Data.HashMap.Strict        (HashMap)
+import           Data.IORef                 (IORef, modifyIORef', newIORef, readIORef,
+                                             writeIORef)
+import           Data.List                  (delete)
+import           Data.Maybe                 (catMaybes)
+import           Data.Text                  (Text)
+import           Data.Text.Lazy.Builder     (fromString, fromText)
+import           Data.Vector.Hashtables     (Dictionary, PrimMonad (PrimState))
+import           Prelude                    hiding (exp, span)
 
-import           Tiger.EscapeAnalysis      (EscapeAnalysisResult, getEscapeAnalysisResult)
+import           Tiger.EscapeAnalysis       (EscapeAnalysisResult,
+                                             getEscapeAnalysisResult)
 import           Tiger.Expr
-import           Tiger.Frame               (Frame)
-import           Tiger.IR.Types            (IR, IRData (..), IRFunction,
-                                            LabeledString (..), Stmt)
-import           Tiger.Semant.LibFunctions (LibFunction (..))
+import           Tiger.Frame                (Frame)
+import           Tiger.IR.Types             (IR, IRData (..), IRFunction,
+                                             LabeledString (..), Stmt)
+import           Tiger.Semant.LibFunctions  (LibFunction (..))
 import           Tiger.Semant.Type
 import           Tiger.Temp
+import           Tiger.TextUtils
 import           Tiger.Translate
 import           Tiger.Unique
 
-import qualified Data.HashMap.Strict       as HashMap
-import qualified Data.HashSet              as HashSet
-import qualified Data.List.NonEmpty        as NonEmpty
-import qualified Data.Text                 as Text
-import qualified Data.Vector.Hashtables    as HashTable
-import qualified Data.Vector.Mutable       as MVec
+import qualified Data.HashMap.Strict        as HashMap
+import qualified Data.HashSet               as HashSet
+import qualified Data.List.NonEmpty         as NonEmpty
+import qualified Data.Text.Lazy.Builder.Int as Builder
+import qualified Data.Vector.Hashtables     as HashTable
+import qualified Data.Vector.Mutable        as MVec
 
-import qualified Tiger.Semant.LibFunctions as LibFunctions
+import qualified Tiger.Semant.LibFunctions  as LibFunctions
 
 type HashTable k v = Dictionary (PrimState IO) MVec.MVector k MVec.MVector v
 
@@ -104,42 +105,42 @@ data SemantException
     | DuplicatedFunctionDefinition !Text
     deriving Show
 
-exceptionToText :: SemantException -> Text
-exceptionToText = \case
-    UndefinedVariable var            -> "undefined variable " <> var
-    UndefinedType typ                -> "undefined type " <> typ
-    RecordHasNoField rec field       -> "record " <> rec <> " has no field " <> field
-    NotRecord lval                   -> lval <> " is not a record"
-    NotArray lval                    -> lval <> " is not an array"
-    TypeMismatch exp act             -> "type mismatch: expecting " <> typeToText exp
-                                     <> ", actual " <> typeToText act
-    DuplicatedRecordField field      -> "duplicated record field " <> field
-    CycleTypeDec typ                 -> "type " <> typ <> " forms cycle"
+instance TextBuildable SemantException where
+  toTextBuilder = \case
+    UndefinedVariable var            -> "undefined variable " <> fromText var
+    UndefinedType typ                -> "undefined type " <> fromText typ
+    RecordHasNoField rec field       -> "record " <> fromText rec <> " has no field " <> fromText field
+    NotRecord lval                   -> fromText lval <> " is not a record"
+    NotArray lval                    -> fromText lval <> " is not an array"
+    TypeMismatch exp act             -> "type mismatch: expecting " <> toTextBuilder exp
+                                     <> ", actual " <> toTextBuilder act
+    DuplicatedRecordField field      -> "duplicated record field " <> fromText field
+    CycleTypeDec typ                 -> "type " <> fromText typ <> " forms cycle"
     EmptyName                        -> "name reference is empty"
-    NotRecordType typ                -> typeToText typ <> " is not a record type"
-    UnitializedRecordField rec field -> "field " <> field <> " of " <> rec
+    NotRecordType typ                -> toTextBuilder typ <> " is not a record type"
+    UnitializedRecordField rec field -> "field " <> fromText field <> " of " <> fromText rec
                                      <> " is unitialized"
-    NotArrayType typ                 -> typeToText typ <> " is not an array type"
+    NotArrayType typ                 -> toTextBuilder typ <> " is not an array type"
     BreakOutsideLoop                 -> "break is outside the loop"
     UnitAssignment                   -> "can't assign unit type expression"
-    UndefinedFunction fun            -> "undefined function " <> fun
+    UndefinedFunction fun            -> "undefined function " <> fromText fun
     ArgumentsNumberMismatch exp act  -> "wrong number of arguments: expecting "
-                                     <> Text.pack (show exp) <> ", actual "
-                                     <> Text.pack (show act)
+                                     <> Builder.decimal exp <> ", actual "
+                                     <> Builder.decimal act
     UnitComparison                   -> "unit type expressions can't be compared"
     NilAssignmentWithoutType         -> "can't assign nil without type constraint"
-    DuplicatedFunctionDefinition fun -> "duplicated definition of function " <> fun
+    DuplicatedFunctionDefinition fun -> "duplicated definition of function " <> fromText fun
 
 instance Exception SemantException
 
 data PosedSemantException = PosedSemantException !FilePath !SemantException !Span
 
-posedExceptionToText :: PosedSemantException -> Text
-posedExceptionToText (PosedSemantException file err span)
-  =  Text.pack file <> Text.pack (':':show l1) <> Text.pack (':':show c1)
-  <> Text.pack ('-':show l2) <> Text.pack (':':show c2)
-  <> ": " <> exceptionToText err
-  where Span (Position l1 c1) (Position l2 c2) = span
+instance TextBuildable PosedSemantException where
+  toTextBuilder (PosedSemantException file err span)
+    =  fromString file <> ":" <> Builder.decimal l1 <> ":" <> Builder.decimal c1
+    <> "-" <> Builder.decimal l2 <> ":" <> Builder.decimal c2
+    <> ": " <> toTextBuilder err
+    where Span (Position l1 c1) (Position l2 c2) = span
 
 instance (Frame f, MonadIO m) => MonadUnique (SemantM m f) where
     newUnique = do

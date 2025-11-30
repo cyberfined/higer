@@ -2,15 +2,17 @@ module Tiger.Semant.Type
     ( Type(..)
     , TypeRef(..)
     , isTypesMatch
-    , typeToText
     ) where
 
-import           Data.IORef   (IORef)
-import           Data.Text    (Text)
+import           Data.IORef             (IORef)
+import           Data.Text              (Text)
+import           Data.Text.Lazy.Builder (fromText)
 
-import           Tiger.Unique (Unique)
+import           Tiger.TextUtils        (TextBuildable (..))
+import           Tiger.Unique           (Unique)
 
-import qualified Data.Text    as Text
+import qualified Data.Text.Lazy         as LazyText
+import qualified Data.Text.Lazy.Builder as Builder
 
 data Type
     = TInt
@@ -37,14 +39,14 @@ isTypesMatch (TName r1) (TName r2)             = r1 == r2
 isTypesMatch _ _                               = False
 
 instance Show Type where
-    show = Text.unpack . typeToText
+    show = LazyText.unpack . Builder.toLazyText . toTextBuilder
 
-typeToText :: Type -> Text
-typeToText = \case
+instance TextBuildable Type where
+  toTextBuilder = \case
     TInt            -> "int"
     TString         -> "string"
-    TRecord rec _ _ -> rec
-    TArray typ _    -> typeToText typ <> "[]"
+    TRecord rec _ _ -> fromText rec
+    TArray typ _    -> toTextBuilder typ <> "[]"
     TNil            -> "nil"
     TUnit           -> "unit"
     TName{}         -> "name"

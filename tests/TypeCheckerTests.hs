@@ -2,21 +2,24 @@
 
 module TypeCheckerTests (tests) where
 
-import           Data.Proxy       (Proxy (..))
-import           Data.Text        (Text)
+import           Data.Proxy             (Proxy (..))
+import           Data.Text              (Text)
+import           Data.Text.Lazy.Builder (Builder)
 import           Test.Tasty
 import           Test.Tasty.HUnit
 
 import           Common
-import           Tiger.Expr       (Expr)
-import           Tiger.Semant     (PosedSemantException (..), SemantException (..),
-                                   Type (..), exceptionToText, posedExceptionToText)
-import           Tiger.Unique     (Unique (..))
+import           Tiger.Expr             (Expr)
+import           Tiger.Semant           (PosedSemantException (..), SemantException (..),
+                                         Type (..))
+import           Tiger.TextUtils        (TextBuildable (..))
+import           Tiger.Unique           (Unique (..))
 
-import qualified Data.Text        as Text
-import qualified Data.Text.IO     as Text
+import qualified Data.Text.IO           as Text
+import qualified Data.Text.Lazy         as LazyText
+import qualified Data.Text.Lazy.Builder as Builder
 
-import qualified Tiger.Amd64      as Amd64
+import qualified Tiger.Amd64            as Amd64
 
 tests :: TestTree
 tests = testGroup "Type checker tests"
@@ -147,10 +150,12 @@ failureFile name path expErr = testCase name $ do
     runSemantAnalyzer path >>= \case
         Left (PosedSemantException _ err _)
           | isErrorsMatch expErr err -> pure ()
-          | otherwise -> assertFailure $  "type checking error mismatch: expecting "
-                                       ++ Text.unpack (exceptionToText expErr)
-                                       ++ ", actual "
-                                       ++ Text.unpack (exceptionToText err)
+          | otherwise -> assertFailure $ showBuilder
+                                       ( "type checking error mismatch: expecting "
+                                       <> toTextBuilder expErr
+                                       <> ", actual "
+                                       <> toTextBuilder err
+                                       )
         Right expr -> assertFailure $  "unexpected success when type checking `"
                                     ++ path
                                     ++ "`:\n"
@@ -200,13 +205,18 @@ failureFile name path expErr = testCase name $ do
 successFile :: TestName -> FilePath -> TestTree
 successFile name path = testCase name $ do
     runSemantAnalyzer path >>= \case
-        Left err -> assertFailure $  "unexpected type error `"
-                                  ++ path
-                                  ++ ":`\n"
-                                  ++ Text.unpack (posedExceptionToText err)
+        Left err -> assertFailure $ showBuilder
+                                  ( "unexpected type error `"
+                                  <> Builder.fromString path
+                                  <> ":`\n"
+                                  <> toTextBuilder err
+                                  )
         Right _ -> pure ()
 
 runSemantAnalyzer :: FilePath -> IO (Either PosedSemantException Expr)
 runSemantAnalyzer path = do
     src <- Text.readFile path
     genericSemant path src (Proxy @Amd64.LinuxFrame) (pure . fmap fst)
+
+showBuilder :: Builder -> String
+showBuilder = LazyText.unpack . Builder.toLazyText

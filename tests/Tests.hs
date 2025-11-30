@@ -5,6 +5,7 @@ import qualified EscapeAnalysisTests
 import qualified IRCanonTests
 import qualified IRGenTests
 import qualified ParserTests
+import qualified RegAlloc.Tests      as RegAllocTests
 import qualified TypeCheckerTests
 
 main :: IO ()
@@ -15,4 +16,5 @@ main = defaultMain $ testGroup "Tiger compiler tests"
     , IRGenTests.tests
     , IRCanonTests.tests
     , CodegenTests.tests
+    , RegAllocTests.tests
     ]

@@ -21,6 +21,7 @@ import           Tiger.Amd64            (Base (..), CallingConvention, Condition
 import           Tiger.Codegen          (TempReg (..))
 import           Tiger.IR               (Block (..), ControlFlowGraph (..), IRData (..),
                                          IRFunction (..))
+import           Tiger.Semant           (Type (..))
 import           Tiger.Temp             (InitLabel (..), InitTemp (..), runTempM)
 import           Tiger.TextUtils        (TextBuildable (..), intercalate)
 
@@ -55,11 +56,11 @@ genStmtTests :: TestTree
 genStmtTests = testGroup "genStmt tests" $ runTests (Proxy @Amd64.LinuxFrame)
     genStmtTestCases
 
-genStmtTestCases :: CallingConvention f => [Proxy f -> TestTree]
+genStmtTestCases :: (CallingConvention f, Frame.Reg f ~ Reg) => [Proxy f -> TestTree]
 genStmtTestCases =
     [ test "label gen" (IR.Label (Temp.LabelText "l1")) [Label (Temp.LabelText "l1")]
     , test "jump gen" (IR.Jump (Temp.LabelText "dick")) [Jmp (Temp.LabelText "dick")]
-    , test "ret gen" IR.Ret [Ret]
+    , \prxy -> test "ret gen" IR.Ret [Ret (Amd64.calleeSaveRegisters prxy)] prxy
     , let t1 = Temp.Temp 1
           t2 = Temp.Temp 2
       in test "negate" (IR.Move (IR.Temp t2) (IR.Binop IR.Sub (IR.Const 0) (IR.Temp t1)))
@@ -227,7 +228,7 @@ genStmtTestCases =
     , \prxy -> testGroup "cjump tests" $ runTests prxy cjumpTests
     ]
 
-effAddrTests :: CallingConvention f => [Proxy f -> TestTree]
+effAddrTests :: (CallingConvention f, Frame.Reg f ~ Reg) => [Proxy f -> TestTree]
 effAddrTests =
     [ let t1 = Temp.Temp 1
           t100 = Temp $ Temp.Temp 100
@@ -952,7 +953,7 @@ effAddrTests =
           ]
     ]
 
-cjumpTests :: CallingConvention f => [Proxy f -> TestTree]
+cjumpTests :: (CallingConvention f, Frame.Reg f ~ Reg) => [Proxy f -> TestTree]
 cjumpTests =
     [ let t1 = Temp.Temp 1
       in test "cmp mem temp 32-bit const #1" (IR.CJump IR.Gt
@@ -1229,14 +1230,14 @@ cjumpTests =
 runTests :: CallingConvention f => Proxy f -> [Proxy f -> TestTree] -> [TestTree]
 runTests prxy = map ($ prxy)
 
-test :: forall f. CallingConvention f
+test :: forall f. (CallingConvention f, Frame.Reg f ~ Reg)
      => TestName
      -> IR.Stmt
      -> [Instr (TempReg Reg)]
      -> Proxy f
      -> TestTree
 test name stmt expInstrs _ = testCase name $ runTempM initTemp initLabel $ do
-    actInstrs <- ShowInstr . DList.toList <$> genStmt @f HashMap.empty stmt
+    actInstrs <- ShowInstr . DList.toList <$> genStmt @f HashMap.empty TUnit stmt
     liftIO $ assertEqual "unexpected codegen result" (ShowInstr expInstrs) actInstrs
   where initTemp = InitTemp 100
         initLabel = InitLabel 100
@@ -1357,7 +1358,7 @@ testRvFpAbsent prxy = testGroup "test rv fp absent" .  map runTestCase
             Jcc{} -> pure ()
             Ret{} -> pure ()
             Label{} -> pure ()
-            Call _ ops -> mapM_ (assertOperand i) ops
+            Call{} -> pure ()
             Push src -> assertOperand i src
             Neg dst -> assertOperand i dst
 

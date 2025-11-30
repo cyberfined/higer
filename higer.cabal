@@ -23,17 +23,22 @@ source-repository head
 library
   exposed-modules:
       Tiger.Amd64
-    , Tiger.RegMachine
     , Tiger.Codegen
     , Tiger.DList
+    , Tiger.EnumMap
+    , Tiger.EnumSet
     , Tiger.EscapeAnalysis
     , Tiger.Expr
     , Tiger.Frame
     , Tiger.IR
+    , Tiger.Liveness
     , Tiger.Parser
+    , Tiger.RegAlloc
+    , Tiger.RegMachine
     , Tiger.Semant
     , Tiger.Temp
     , Tiger.TextUtils    
+    , Tiger.UndirectedGraph
     , Tiger.Unique
   other-modules:
       Tiger.Amd64.AsmPrinters.Gas
@@ -44,11 +49,11 @@ library
     , Tiger.Amd64.Emulator
     , Tiger.Amd64.Frame.Linux
     , Tiger.Amd64.Frame
-    , Tiger.EnumMap
     , Tiger.IR.Canon
     , Tiger.IR.Interpreter
     , Tiger.IR.Printer
     , Tiger.IR.Types
+    , Tiger.ListUtils
     , Tiger.Semant.LibFunctions
     , Tiger.Semant.Type
     , Tiger.Translate
@@ -102,6 +107,7 @@ executable higer
       base >= 4.7 && < 5
     , higer
     , text >= 2 && < 3
+    , fgl >= 5.8 && < 6
   default-extensions:
       FlexibleContexts
     , LambdaCase
@@ -120,10 +126,12 @@ test-suite tests
     , Codegen.Tests
     , Common
     , EscapeAnalysisTests
-    , ParserTests
-    , TypeCheckerTests
     , IRCanonTests
-    , IRGenTests
+    , IRGenTests    
+    , ParserTests
+    , RegAlloc.Tests
+    , RegAlloc.Amd64Tests
+    , TypeCheckerTests
   hs-source-dirs:
       tests
   ghc-options: -Wall

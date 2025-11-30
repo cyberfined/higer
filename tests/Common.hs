@@ -48,6 +48,7 @@ module Common
     , genericCanonicalizeIR
     , genericCodegen
     , runInterpreter
+    , showBuildable
     ) where
 
 import           Control.Monad          ((>=>))
@@ -68,8 +69,7 @@ import           Tiger.Parser           (parse)
 import           Tiger.RegMachine       (FrameEmulator, FrameRegister (..), Interpretable,
                                          InterpreterResult (..), ReturnRegister (..),
                                          newEmulator)
-import           Tiger.Semant           (PosedSemantException (..), posedExceptionToText,
-                                         semantAnalyze)
+import           Tiger.Semant           (PosedSemantException (..), semantAnalyze)
 import           Tiger.Temp             (InitLabel (..), InitTemp (..), TempM, runTempM)
 import           Tiger.TextUtils        (TextBuildable (..))
 
@@ -120,7 +120,7 @@ instance Eq EqExpr where
         _                                            -> False
 
 instance Show EqExpr where
-    show = LazyText.unpack . Builder.toLazyText . toTextBuilder . unEqExpr
+    show = showBuildable . unEqExpr
 
 newtype EqLVal = EqLVal LVal
 
@@ -353,7 +353,7 @@ genericCompileToIR :: Frame f
                    -> IO a
 genericCompileToIR src prxy cont = genericSemant "test.tig" src prxy $ \case
     Left err      -> liftIO $ assertFailure $  "unexpected type error `"
-                                            ++ Text.unpack (posedExceptionToText err)
+                                            ++ LazyText.unpack (Builder.toLazyText $ toTextBuilder err)
     Right (_, ir) -> cont ir
 
 genericCanonicalizeIR :: Frame f
@@ -399,3 +399,6 @@ runInterpreter rv fp _ ir input = do
                                   ++ "\nError: "
                                   ++ show err
         Nothing  -> pure res
+
+showBuildable :: TextBuildable a => a -> String
+showBuildable = LazyText.unpack . Builder.toLazyText . toTextBuilder

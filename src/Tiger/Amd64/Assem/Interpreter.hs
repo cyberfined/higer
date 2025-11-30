@@ -11,11 +11,12 @@ import           Data.Proxy                (Proxy (..))
 import           Data.Typeable             (Typeable)
 import           Prelude                   hiding (Word, quot, rem)
 
-import           Tiger.Amd64.Assem.Types   (Base (..), CallingConvention (..),
-                                            Condition (..), Imul (..), Index (..),
-                                            Instr (..), InstrOperands, Offset (..),
-                                            Operand (..), OperandType (..), Reg (..),
-                                            RegMem, Scale (..))
+import           Tiger.Amd64.Assem.Types   (Base (..), CallArgs (..),
+                                            CallingConvention (..), Condition (..),
+                                            Imul (..), Index (..), Instr (..),
+                                            InstrOperands, Offset (..), Operand (..),
+                                            OperandType (..), Reg (..), RegMem,
+                                            Scale (..))
 import           Tiger.Codegen             (TempReg (..))
 import           Tiger.Frame               (wordSize)
 import           Tiger.IR.Types            (ControlFlowGraph (..))
@@ -133,12 +134,12 @@ runInstrM fromReg instr = withCurrentStmt instr $ case instr of
                 (Le, Eq) -> True
                 _        -> False
         if shouldJump then jumpLabel tLab else jumpLabel fLab
-    Ret -> throwError EndOfFunction
+    Ret{} -> throwError EndOfFunction
     Label{} -> pure ()
-    Call funLabel args -> case funLabel of
+    Call funLabel (CallArgs args) _ -> case funLabel of
         Temp.LabelText funName
           | Just libFunc <- HashMap.lookup funName libFuncs
-          -> mapM getOperandValue args >>= libFunc
+          -> mapM (getRegister . fromReg) args >>= libFunc
         _ -> callFunction funLabel []
     Push src -> do
         val <- getOperandValue src

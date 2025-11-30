@@ -1,17 +1,21 @@
 {-# OPTIONS_GHC -fmax-pmcheck-models=500 #-}
-{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DataKinds     #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Tiger.Amd64.Codegen
     ( codegen
     , genStmt
+    , gpRegisters
     ) where
 
 import           Control.Monad           (foldM, forM)
 import           Data.Bifunctor          (first)
-import           Data.Bits               (Bits (..), countLeadingZeros, finiteBitSize)
+import           Data.Bits               (Bits (bitSizeMaybe, (.&.)), countLeadingZeros,
+                                          finiteBitSize)
 import           Data.Foldable           (fold)
 import           Data.HashMap.Strict     (HashMap)
 import           Data.Int                (Int8)
+import           Data.List               ((\\))
 import           Data.Proxy              (Proxy (..))
 import           GHC.Stack               (HasCallStack)
 
@@ -21,15 +25,17 @@ import           Tiger.DList
 import           Tiger.Frame             (Access (..), frameArgs, frameName, wordSize)
 import           Tiger.IR.Types          hiding (Add, Call, Const, Label, Mul, Name,
                                           Relop (..), Ret, Sub, Temp, Xor)
+import           Tiger.Semant.Type       (Type (..))
 import           Tiger.Temp              (MonadTemp (..))
 
 import qualified Data.Graph.Inductive    as Graph
 import qualified Data.HashMap.Strict     as HashMap
 
+import qualified Tiger.Frame             as FrameClass
 import qualified Tiger.IR                as IR
 import qualified Tiger.Temp              as Temp
 
-codegen :: forall f m. (HasCallStack, CallingConvention f, MonadTemp m)
+codegen :: forall f m. (HasCallStack, CallingConvention f, MonadTemp m, FrameClass.Reg f ~ Reg)
         => IRData (ControlFlowGraph Stmt) f
         -> m (IRData (ControlFlowGraph (Instr (TempReg Reg))) f)
 codegen ir@IRData{..} = do
@@ -47,7 +53,7 @@ codegen ir@IRData{..} = do
         (firstNode, shouldInsertNode) <- case mFirstNode of
             Nothing -> error "Zero node not found"
             Just (node, block@Block{..}) -> do
-                stmts' <- fold <$> mapM (genStmt funcsMap) blockStmts
+                stmts' <- fold <$> mapM (genStmt funcsMap irFuncRetType) blockStmts
                 case blockStmts of
                     (IR.Label{}:_) ->
                         let block' = block { blockStmts = toList stmts' }
@@ -57,7 +63,7 @@ codegen ir@IRData{..} = do
                         in pure ((node, block'), False)
 
         nodes' <- forM nodes $ \(node, block@Block{..}) -> do
-            stmts' <- fold <$> mapM (genStmt funcsMap) blockStmts
+            stmts' <- fold <$> mapM (genStmt funcsMap irFuncRetType) blockStmts
             pure (node, block { blockStmts = toList stmts' })
 
         let cfg = Graph.mkGraph (firstNode:nodes') (Graph.labEdges $ cfgGraph irFuncBody)
@@ -77,11 +83,12 @@ codegen ir@IRData{..} = do
                            (x:xs2') -> (Just x, xs1 ++ xs2')
                            _        -> (Nothing, xs)
 
-genStmt :: forall f m. (HasCallStack, CallingConvention f, MonadTemp m)
+genStmt :: forall f m. (HasCallStack, CallingConvention f, MonadTemp m, FrameClass.Reg f ~ Reg)
         => HashMap Temp.Label f
+        -> Type
         -> Stmt
         -> m (DList (Instr (TempReg Reg)))
-genStmt funcsMap = \case
+genStmt funcsMap retType = \case
     IR.Label l -> pure $ singleton (Label l)
     IR.Move (IR.Temp dst) (IR.Call funName args) -> do
         is <- genCall funName args
@@ -120,9 +127,15 @@ genStmt funcsMap = \case
 
     IR.Jump l -> pure $ singleton $ Jmp l
 
-    IR.Ret -> pure $ singleton Ret
-    _ -> error "Statement should be linearized\n"
-  where genCall funName args = do
+    IR.Ret ->
+      let calleeSaveRegs = calleeSaveRegisters prxy
+          src = if retType == TUnit
+                  then calleeSaveRegs
+                  else Rax : calleeSaveRegs
+      in pure $ singleton $ Ret src
+    _ -> error "Statement should be linearized"
+  where callerSaveRegisters = CallDefs $ gpRegisters \\ calleeSaveRegisters prxy
+        genCall funName args = do
             let (regArgs, stackArgs) = case HashMap.lookup funName funcsMap of
                     Just frame ->
                         let accesses = frameArgs frame
@@ -131,7 +144,7 @@ genStmt funcsMap = \case
             is1 <- foldM (\is e -> (is<>) <$> pushArg e) empty stackArgs
             (is2, is3) <- foldM calcRegArg (empty, []) regArgs
             let incStackSize = Const $ fromIntegral $ length stackArgs * wordSize prxy
-            let call = Call funName (map (Register . Reg . snd) regArgs)
+            let call = Call funName (CallArgs $ map snd regArgs) callerSaveRegisters
             let rest = call : [Add (Register $ Reg Rsp) incStackSize | not $ null stackArgs]
             pure $ is1 <> is2 <> fromList is3 <> fromList rest
           where pushArg = \case
@@ -145,8 +158,10 @@ genStmt funcsMap = \case
 
                 calcRegArg (is, setIs) = \case
                     (IR.Const n, reg) ->
-                        let mov = Mov (Register $ Reg reg) $ Const (fromIntegral n)
-                        in pure (is, mov : setIs)
+                        let mov = Mov (Register $ Reg reg) (Const $ fromIntegral n)
+                            xor = Xor (Register $ Reg reg) (Register $ Reg reg)
+                            instr = if n == 0 then xor else mov
+                        in pure (is, instr : setIs)
                     (IR.Name l, reg) ->
                         let mov = Mov (Register $ Reg reg) $ Name l
                         in pure (is, mov : setIs)
@@ -223,6 +238,7 @@ genExpr :: forall m. (HasCallStack, MonadTemp m)
         -> m (DList (Instr (TempReg Reg)))
 genExpr = \case
     IR.Temp t -> \dst -> pure $ singleton (Mov (Register dst) (Register $ tempToReg t))
+    IR.Const 0 -> \dst -> pure $ singleton (Xor (Register dst) (Register dst))
     IR.Const n -> \dst -> pure $ singleton $ Mov (Register dst) (Const $ fromIntegral n)
     IR.Name l -> \dst -> pure $ singleton $ Mov (Register dst) (Name l)
 
@@ -455,3 +471,6 @@ toIntN x = case (bitSizeMaybe (0 :: a), bitSizeMaybe (0 :: b)) of
                              else Just $ fromIntegral x
       | otherwise      -> Just $ fromIntegral x
     _                  -> Nothing
+
+gpRegisters :: [Reg]
+gpRegisters = [Rax, Rbx, Rcx, Rdx, Rsi, Rdi, R8, R9, R10, R11, R12, R13, R14, R15]

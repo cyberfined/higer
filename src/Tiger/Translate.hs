@@ -37,6 +37,7 @@ import           Data.Text                  (Text)
 import           Tiger.Expr                 (Escaping (..))
 import           Tiger.Frame                (Frame)
 import           Tiger.IR.Types
+import           Tiger.ListUtils            (unsnoc)
 import           Tiger.Semant.LibFunctions  (LibFunction (..))
 import           Tiger.Semant.Type
 import           Tiger.Temp                 (Label (..), MonadTemp (..), Temp (FP, RV))
@@ -101,8 +102,9 @@ withNewFrame' parentLevel funLabel args f = do
                 else Move (Temp RV) <$> irToExpr bodyIR
     frame' <- levelFrame <$> getCurrentLevel
     let func = IRFunction
-            { irFuncBody  = Seq $ Frame.procEntryExit1 frame bodyStmt :| [Ret]
-            , irFuncFrame = frame'
+            { irFuncBody    = Seq $ Frame.procEntryExit1 frame bodyStmt :| [Ret]
+            , irFuncFrame   = frame'
+            , irFuncRetType = retTyp
             }
     insertIRFunction func
     pure res
@@ -328,12 +330,6 @@ transCall funName funLabel parentLevel argsIR = do
 
 libFunctions :: HashSet Text
 libFunctions = HashSet.fromList $ map libFunName LibFunctions.libFunctions
-
-unsnoc :: [a] -> Maybe ([a], a)
-unsnoc = unsnoc' []
-  where unsnoc' acc (x:xs@(_:_)) = unsnoc' (x:acc) xs
-        unsnoc' acc [x]          = Just (reverse acc, x)
-        unsnoc' _ _              = Nothing
 
 transLet :: MonadTranslate m f => [IR] -> IR -> m f IR
 transLet mIRStmts irRes = case NonEmpty.nonEmpty mIRStmts of

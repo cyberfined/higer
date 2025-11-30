@@ -3,7 +3,7 @@ module Tiger.Amd64.Frame.Linux (LinuxFrame) where
 import           Data.Bifunctor      (first)
 
 import           Tiger.Amd64.Assem   (CallingConvention (..), Instr, Reg (..))
-import           Tiger.Amd64.Codegen (codegen)
+import           Tiger.Amd64.Codegen (codegen, gpRegisters)
 import           Tiger.IR.Types      (Expr (..))
 import           Tiger.Temp          hiding (Temp)
 import           Tiger.TextUtils     (TextBuildable (..))
@@ -30,7 +30,9 @@ instance FrameClass.Frame LinuxFrame where
     externalCall _ name args = Call (LabelText name) args
     procEntryExit1 (LinuxFrame frame) = Amd64.procEntryExit1 frame
     codegen = codegen
+    gpRegisters _ = gpRegisters
 
 instance CallingConvention LinuxFrame where
-    argsRegisters _ = [Rdi, Rsi, Rdx, Rcx, R8, R9]
-    toAmd64Frame    = getFrame
+    argsRegisters _       = [Rdi, Rsi, Rdx, Rcx, R8, R9]
+    calleeSaveRegisters _ = [Rbx, R12, R13, R14, R15]
+    toAmd64Frame          = getFrame

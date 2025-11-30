@@ -8,6 +8,8 @@ module Tiger.Amd64.Assem.Types
     , Base(..)
     , Index(..)
     , Scale(..)
+    , CallArgs(..)
+    , CallDefs(..)
     , OperandType(..)
     , Const32
     , Const64
@@ -19,6 +21,7 @@ module Tiger.Amd64.Assem.Types
     , InstrOperands
     , MovConstSize
     , CallingConvention(..)
+    , InstrBuilder
     ) where
 
 import           Data.Int                   (Int32, Int64, Int8)
@@ -31,8 +34,8 @@ import           GHC.TypeLits               (ErrorMessage (..), TypeError)
 
 import           Tiger.Amd64.Frame          (Frame)
 import           Tiger.Codegen              (Destinations (..), Instruction (..),
-                                             Sources (..), TempReg (..),
-                                             WithOperands (..))
+                                             InstructionBuilder (..), Sources (..),
+                                             TempReg (..), WithOperands (..))
 import           Tiger.Temp                 (Label)
 import           Tiger.TextUtils            (TextBuildable (..))
 
@@ -85,6 +88,10 @@ newtype Base r = Base { getBase :: r } deriving newtype Eq
 newtype Index r = Index r deriving newtype Eq
 
 newtype Scale = Scale Int8 deriving newtype Eq
+
+newtype CallArgs = CallArgs [Reg] deriving newtype Eq
+
+newtype CallDefs = CallDefs [Reg] deriving newtype Eq
 
 data OperandType
     = OpReg
@@ -165,9 +172,9 @@ data Instr r where
         -> Instr r
     Jmp :: !Label -> Instr r
     Jcc :: !Condition -> !Label -> !Label -> Instr r
-    Ret :: Instr r
+    Ret :: ![Reg] -> Instr r
     Label :: !Label -> Instr r
-    Call :: !Label -> ![Operand r 'OpReg] -> Instr r
+    Call :: !Label -> !CallArgs -> !CallDefs -> Instr r
     Push :: Const32 t => !(Operand r t) -> Instr r
     Neg :: RegMem t => !(Operand r t) -> Instr r
 
@@ -193,9 +200,9 @@ instance Eq r => Eq (Instr r) where
         (Cmp s1 s2, Cmp s3 s4) -> op32Eq s1 s3 s2 s4
         (Jmp l1, Jmp l2) -> l1 == l2
         (Jcc c1 t1 f1, Jcc c2 t2 f2) -> c1 == c2 && t1 == t2 && f1 == f2
-        (Ret, Ret) -> True
+        (Ret src1, Ret src2) -> src1 == src2
         (Label l1, Label l2) -> l1 == l2
-        (Call l1 as1, Call l2 as2) -> l1 == l2 && argsEq as1 as2
+        (Call l1 as1 dst1, Call l2 as2 dst2) -> l1 == l2 && as1 == as2 && dst1 == dst2
         (Push s1, Push s2) -> case (s1, s2) of
             (Const c1, Const c2) -> c1 == c2
             _                    -> opNotConstEq s1 s2
@@ -209,11 +216,6 @@ instance Eq r => Eq (Instr r) where
                    -> Bool
             op32Eq o11 o21 (Const c1) (Const c2) = opNotConstEq o11 o21 && c1 == c2
             op32Eq o11 o21 o12 o22 = opNotConstEq o11 o21 && opNotConstEq o12 o22
-
-            argsEq :: [Operand r 'OpReg] -> [Operand r 'OpReg] -> Bool
-            argsEq (Register r1:rs1) (Register r2:rs2) = r1 == r2 && argsEq rs1 rs2
-            argsEq [] []                               = True
-            argsEq _ _                                 = False
 
 data Imul (r :: Type) where
     Imul2 :: RegMem t
@@ -270,9 +272,9 @@ instance TextBuildable r => TextBuildable (Instr r) where
         Cmp dst src -> "сmpq " <> opToAsm src <> ", " <> opToAsm dst
         Jmp l -> "jmp " <> toTextBuilder l
         Jcc cnd tLab _ -> conditionToAsm cnd <> " " <> toTextBuilder tLab
-        Ret -> "ret"
+        Ret{} -> "ret"
         Label l -> toTextBuilder l <> ":"
-        Call funName _ -> "call " <> toTextBuilder funName
+        Call funName _ _ -> "call " <> toTextBuilder funName
         Push src -> "pushq " <> opToAsm src
         Neg dst -> "negq " <> opToAsm dst
       where opToAsm :: Operand r t -> Builder
@@ -304,8 +306,9 @@ instance TextBuildable r => TextBuildable (Instr r) where
               where (prefix, x') = if x < 0 then ("-0x", -x) else ("0x", x)
 
 class FrameClass.Frame f => CallingConvention f where
-    argsRegisters :: Proxy f -> [Reg]
-    toAmd64Frame  :: f -> Frame
+    argsRegisters       :: Proxy f -> [Reg]
+    calleeSaveRegisters :: Proxy f -> [Reg]
+    toAmd64Frame        :: f -> Frame
 
 instance WithOperands Instr (TempReg Reg) where
     getOperands = getOperandsG Reg
@@ -315,14 +318,18 @@ instance WithOperands Instr Reg where
 
 getOperandsG :: Eq r => (Reg -> r) -> Instr r -> (Destinations r, Sources r)
 getOperandsG f = makeUniq . \case
-    Add dst src -> flip getSrcOperandRegs src <$> getDstOperandRegs dst
-    Sub dst src -> flip getSrcOperandRegs src <$> getDstOperandRegs dst
-    Xor dst src -> flip getSrcOperandRegs src <$> getDstOperandRegs dst
+    Add dst src -> flip getSrcOperandRegs src <$> getBinopDstOperands dst
+    Sub dst src -> flip getSrcOperandRegs src <$> getBinopDstOperands dst
+    Xor dst src
+      | Register dstReg <- dst, Register srcReg <- src, dstReg == srcReg
+      -> (Destinations [dstReg], Sources [])
+      | otherwise
+      -> flip getSrcOperandRegs src <$> getBinopDstOperands dst
     Lea dst src -> flip getSrcOperandRegs src <$> getDstOperandRegs dst
-    Sal dst src -> flip getSrcOperandRegs src <$> getDstOperandRegs dst
-    Sar dst src -> flip getSrcOperandRegs src <$> getDstOperandRegs dst
+    Sal dst src -> flip getSrcOperandRegs src <$> getBinopDstOperands dst
+    Sar dst src -> flip getSrcOperandRegs src <$> getBinopDstOperands dst
     Imul imul -> case imul of
-        Imul2 dst src   -> flip getSrcOperandRegs src <$> getDstOperandRegs dst
+        Imul2 dst src   -> flip getSrcOperandRegs src <$> getBinopDstOperands dst
         Imul3 dst src _ -> flip getSrcOperandRegs src <$> getDstOperandRegs dst
     Idiv src ->
         let Sources ss = getSrcOperandRegs (Sources []) src
@@ -337,11 +344,11 @@ getOperandsG f = makeUniq . \case
                  )
     Jmp{} -> (Destinations [], Sources [])
     Jcc{} -> (Destinations [], Sources [])
-    Ret{} -> (Destinations [], Sources [])
+    Ret src -> (Destinations [], Sources (map f src))
     Label{} -> (Destinations [], Sources [])
-    Call _ args ->
-        let srcs = map (\(Register r) -> r) args
-        in (Destinations [f Rax, f Rdx], Sources (f Rsp : srcs))
+    Call _ (CallArgs args) (CallDefs dst) -> ( Destinations (f Rsp : map f dst)
+                                             , Sources (f Rsp : map f args)
+                                             )
     Push src -> (Destinations [f Rsp], getSrcOperandRegs (Sources []) src)
     Neg dst -> case dst of
         Register r -> (Destinations [r], Sources [r])
@@ -372,9 +379,19 @@ getOperandsG f = makeUniq . \case
             Const{}                                        -> Sources rs
             Name{}                                         -> Sources rs
 
+        getBinopDstOperands :: Operand r t -> (Destinations r, Sources r)
+        getBinopDstOperands = \case
+          AddrRegBase _ (Base b) -> (Destinations [], Sources [b])
+          AddrRegBaseIndex _ Nothing (Index i) _ -> (Destinations [], Sources [i])
+          AddrRegBaseIndex _ (Just (Base b)) (Index i) _ -> ( Destinations []
+                                                            , Sources [b, i]
+                                                            )
+          Register r -> (Destinations [r], Sources [r])
+          Const{} -> (Destinations [], Sources [])
+          Name{} -> (Destinations [], Sources [])
+                  
         makeUniq :: Eq r => (Destinations r, Sources r) -> (Destinations r, Sources r)
         makeUniq (Destinations dd, Sources ss) = (Destinations $ nub dd, Sources $ nub ss)
-
 
 instance (Eq r, Enum r, WithOperands Instr r) => Instruction Instr r where
     isMove = \case
@@ -407,9 +424,9 @@ instance (Eq r, Enum r, WithOperands Instr r) => Instruction Instr r where
         Cmp t1 t2 -> Cmp (substOperand t1) (substOperand t2)
         Jmp l -> Jmp l
         Jcc cnd tLab fLab -> Jcc cnd tLab fLab
-        Ret -> Ret
+        Ret src -> Ret src
         Label l -> Label l
-        Call fn args -> Call fn $ map substOperand args
+        Call fn args dst -> Call fn args dst
         Push t -> Push $ substOperand t
         Neg t -> Neg $ substOperand t
       where substOperand :: Operand r t -> Operand b t
@@ -427,3 +444,14 @@ instance (Eq r, Enum r, WithOperands Instr r) => Instruction Instr r where
             findSubst xs x = case lookup x xs of
                 Just b  -> b
                 Nothing -> error "Failed to find substitution"
+
+data InstrBuilder
+
+instance InstructionBuilder InstrBuilder Instr Reg where
+    loadRegister _ offset reg =
+        let addr = AddrRegBase (Offset $ fromIntegral offset) (Base Rbp)
+        in Mov (Register reg) addr
+    storeRegister _ offset reg =
+        let addr = AddrRegBase (Offset $ fromIntegral offset) (Base Rbp)
+        in Mov addr (Register reg)
+    moveRegister _ r1 r2 = Mov (Register r1) (Register r2)
